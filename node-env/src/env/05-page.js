@@ -389,6 +389,11 @@ const __pageApi = {
   // 注册"脚本执行完"回调：在 load() 内部、DOMContentLoaded 之前触发。
   // 这是唯一能赶在 sensor 同步采集之前派发事件的时机。
   onScriptsDone(fn) { __onScriptsDone = fn; },
+  // 推进虚拟时间，同步执行这一轮所有到期回调。返回执行的回调数。
+  // 这是和 iv8 的 eventLoop.sleep() 对齐的接口。
+  advance(ms) { return __vtAdvance(ms); },
+  // 当前虚拟时间 / 队列里还剩多少待执行
+  vtState() { return { now: __vtNow, pending: __vtQueue.length }; },
   clockJump() { return __clockJump; },
   getDocument: () => __document,
   getWindow: () => __window,

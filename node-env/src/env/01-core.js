@@ -36,6 +36,95 @@ Object.defineProperty(Function.prototype, 'toString', {
   value: __nativeFTS, writable: true, configurable: true, enumerable: false,
 });
 
+// ══════════════════════════════════════════════════════════════════
+// ★★ 补 Node 22 缺失的 Uint8Array base64/hex API
+//
+// 这一组是 2024 年进标准、Chromium 早已支持、Node 25 才有的方法：
+//   Uint8Array.prototype.toBase64() / toHex()
+//   Uint8Array.fromBase64() / fromHex()
+// 实测真实 Edge：四个全是 function；Node 22 全是 undefined。
+//
+// 为什么这条很关键：
+//   sensor 编码 payload 很可能用 toBase64（比手写 base64 + btoa 更快）。
+//   我们环境里没有 → 抛 TypeError → 被 try/catch 吞掉 → 静默走降级路径
+//   或直接少一块数据。这类"新标准 API 缺失"是最难发现的，
+//   因为它不在任何补环境 checklist 里（大多数 checklist 是 2020 年写的）。
+//
+// 顺带把依据同一规范的其它新方法也补上，避免下次再撞：
+//   ArrayBuffer.prototype.transferToFixedLength、Uint8Array.prototype.setFromBase64
+// ══════════════════════════════════════════════════════════════════
+function __installModernTypedArrayApis() {
+  const TAs = [Uint8Array, Uint8ClampedArray, Int8Array];
+  const toB64 = function toBase64(options) {
+    const bytes = new Uint8Array(this.buffer, this.byteOffset, this.byteLength);
+    let b64 = Buffer.from(bytes).toString('base64');
+    const alphabet = options && options.alphabet;
+    if (alphabet === 'base64url') {
+      b64 = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    } else if (options && options.omitPadding) {
+      b64 = b64.replace(/=+$/, '');
+    }
+    return b64;
+  };
+  const toHex = function toHex() {
+    const bytes = new Uint8Array(this.buffer, this.byteOffset, this.byteLength);
+    return Buffer.from(bytes).toString('hex');
+  };
+
+  for (const TA of TAs) {
+    if (typeof TA.prototype.toBase64 !== 'function') {
+      defMethod(TA.prototype, 'toBase64', nativeLike(toB64, 'toBase64'));
+    }
+    if (typeof TA.prototype.toHex !== 'function') {
+      defMethod(TA.prototype, 'toHex', nativeLike(toHex, 'toHex'));
+    }
+    if (typeof TA.fromBase64 !== 'function') {
+      defValue(TA, 'fromBase64', nativeLike(function fromBase64(str, options) {
+        let t = String(str);
+        if (options && options.alphabet === 'base64url') {
+          t = t.replace(/-/g, '+').replace(/_/g, '/');
+        }
+        t += '='.repeat((-t.length % 4 + 4) % 4);
+        const buf = Buffer.from(t, 'base64');
+        return new TA(buf.buffer, buf.byteOffset, buf.length);
+      }, 'fromBase64'), true);
+    }
+    if (typeof TA.fromHex !== 'function') {
+      defValue(TA, 'fromHex', nativeLike(function fromHex(str) {
+        const buf = Buffer.from(String(str), 'hex');
+        return new TA(buf.buffer, buf.byteOffset, buf.length);
+      }, 'fromHex'), true);
+    }
+    if (typeof TA.prototype.setFromBase64 !== 'function') {
+      defMethod(TA.prototype, 'setFromBase64', function (str, options) {
+        let t = String(str);
+        if (options && options.alphabet === 'base64url') t = t.replace(/-/g, '+').replace(/_/g, '/');
+        t += '='.repeat((-t.length % 4 + 4) % 4);
+        const src = Buffer.from(t, 'base64');
+        const n = Math.min(src.length, this.length);
+        this.set(src.subarray(0, n), 0);
+        return { read: String(str).length, written: n };
+      });
+    }
+    if (typeof TA.prototype.setFromHex !== 'function') {
+      defMethod(TA.prototype, 'setFromHex', function (str) {
+        const src = Buffer.from(String(str), 'hex');
+        const n = Math.min(src.length, this.length);
+        this.set(src.subarray(0, n), 0);
+        return { read: String(str).length, written: n };
+      });
+    }
+  }
+  if (typeof ArrayBuffer.prototype.transferToFixedLength !== 'function') {
+    defMethod(ArrayBuffer.prototype, 'transferToFixedLength', function (newLen) {
+      const n = newLen === undefined ? this.byteLength : (newLen | 0);
+      const out = new ArrayBuffer(n);
+      new Uint8Array(out).set(new Uint8Array(this, 0, Math.min(n, this.byteLength)));
+      return out;
+    });
+  }
+}
+
 function nativeLike(fn, name) {
   if (typeof fn !== 'function') return fn;
   __nativeFns.add(fn);

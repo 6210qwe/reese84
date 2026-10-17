@@ -1181,7 +1181,81 @@ var __timerScale = 1;
 // 定时器：真实 host 定时器，保证 sensor 的异步流程能推进
 const __timers = new Map();
 let __timerSeq = 1;
+// ══════════════════════════════════════════════════════════════════
+// ★★ 虚拟定时器队列（--virtual-timers）
+//
+// 为什么必须做（这是此前一直没试过的关键一块）：
+//   iv8 跑完 page.load 之后是：
+//       for _ in range(14): ctx.eval("__iv8__.eventLoop.sleep(600);")
+//   也就是**手动推进虚拟时间**，每一轮把所有到期回调立即执行。
+//
+//   而我的实现是 __HOST__.setTimeout(..., delay) —— 真实时间等待。
+//   于是：
+//     · delay=600 的要真等 600ms，14 轮就是 8.4 秒（我靠 --timer-scale 压过）
+//     · 更重要的是：真实定时器是"一个个来"的，
+//       没法在"某一轮结束时"插入动作（比如派发鼠标事件）
+//
+//   虚拟队列能做到：
+//     advance(600)  → 时钟 +600，按到期顺序**同步**执行这一轮所有回调，
+//                     函数返回时这一轮彻底跑完，宿主可以立刻插手。
+//   这才叫"分阶段推进"，也才谈得上"阶段之间派发事件"。
+// ══════════════════════════════════════════════════════════════════
+const __vtQueue = [];          // { id, due, fn, args, type, interval }
+let __vtNow = 0;               // 虚拟时间（ms）
+let __vtMaxCbPerAdvance = 4000;
+
+function __vtSchedule(fn, delay, args, type, interval) {
+  if (typeof fn === 'string') { const code = fn; fn = function () { (0, eval)(code); }; }
+  if (typeof fn !== 'function') return 0;
+  const id = __timerSeq++;
+  const d = Math.max(0, Number(delay) || 0);
+  __vtQueue.push({ id, due: __vtNow + d, fn, args, type, interval, delay: d });
+  try { if (__HOST__._timerRec) __HOST__._timerRec('set', id, d); } catch (e) {}
+  return id;
+}
+
+/**
+ * 推进虚拟时间 ms 毫秒，按到期顺序同步执行所有回调。
+ * 返回本轮执行的回调数（宿主用来判断"这一轮 sensor 做了多少事"）。
+ */
+function __vtAdvance(ms) {
+  const target = __vtNow + Math.max(0, Number(ms) || 0);
+  let ran = 0;
+  while (ran < __vtMaxCbPerAdvance) {
+    // 找最早到期的、且 due <= target
+    let best = -1;
+    for (let i = 0; i < __vtQueue.length; i++) {
+      const t = __vtQueue[i];
+      if (t.due > target) continue;
+      if (best < 0 || t.due < __vtQueue[best].due) best = i;
+    }
+    if (best < 0) break;
+    const t = __vtQueue[best];
+    __vtNow = Math.max(__vtNow, t.due);
+    if (t.type === 'interval') {
+      t.due = __vtNow + Math.max(4, t.delay);
+    } else {
+      __vtQueue.splice(best, 1);
+      __timers.delete(t.id);
+    }
+    try { if (__HOST__._timerRec) __HOST__._timerRec('fire', t.id, t.delay); } catch (e) {}
+    try { t.fn.apply(__window, t.args || []); } catch (e) {
+      __HOST__.log('timer 异常: %s', e && e.message);
+    }
+    ran++;
+  }
+  if (ran >= __vtMaxCbPerAdvance) {
+    __HOST__.log('!! advance 达到回调上限 %s，可能有 setTimeout 自旋', __vtMaxCbPerAdvance);
+  }
+  // ★ 时钟必须推进到 target。
+  //   第一版漏了这行，表现是"虚拟时间永远 0ms、每轮都执行 0 个回调"——
+  //   因为下一轮算出的 target 还是 600，队列里 due>600 的永远等不到。
+  __vtNow = target;
+  return ran;
+}
+
 function __setTimeout(fn, delay, ...args) {
+  if (__CFG.virtualTimers) return __vtSchedule(fn, delay, args, 'timeout', 0);
   if (typeof fn === 'string') { const code = fn; fn = function () { (0, eval)(code); }; }
   if (typeof fn !== 'function') return 0;
   const id = __timerSeq++;
@@ -1199,11 +1273,19 @@ function __setTimeout(fn, delay, ...args) {
   return id;
 }
 function __clearTimeout(id) {
+  if (__CFG.virtualTimers) {
+    const n = Number(id);
+    const i = __vtQueue.findIndex((x) => x.id === n);
+    try { if (__HOST__._timerRec) __HOST__._timerRec('clear', n, i >= 0 ? 1 : 0); } catch (e) {}
+    if (i >= 0) __vtQueue.splice(i, 1);
+    return;
+  }
   const t = __timers.get(Number(id));
   try { if (__HOST__._timerRec) __HOST__._timerRec('clear', Number(id), t ? 1 : 0); } catch (e) {}
   if (t) { __HOST__.clearTimeout(t.h); __timers.delete(Number(id)); }
 }
 function __setInterval(fn, delay, ...args) {
+  if (__CFG.virtualTimers) return __vtSchedule(fn, delay, args, 'interval', 1);
   if (typeof fn !== 'function') return 0;
   const id = __timerSeq++;
   const virt = Math.max(4, Number(delay) || 4);
@@ -1774,6 +1856,7 @@ function __installWindow() {
   //   reese84 会显式检查这个（重点检查 Window 与 eval）。
   // ══════════════════════════════════════════════════════════════
   __decorateNavigator();
+  __installModernTypedArrayApis();
 
   defValue(w, 'Touch', Touch, true);
   defValue(w, 'TouchList', TouchList, true);

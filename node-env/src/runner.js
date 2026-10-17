@@ -106,6 +106,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     fakeStart: Number(opt('--fake-start', '0')) || 0,
     iv8Profile: flag('--iv8-profile'),
     dumpBtoa: flag('--dump-btoa'),
+    virtualTimers: flag('--virtual-timers'),
     traceDate: flag('--trace-date'),
     warpMs: Number(opt('--warp-ms', '0')) || 0,
     warpRatio: Number(opt('--warp-ratio', '0.09')) || 0.09,
@@ -299,6 +300,11 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     });
   }
 
+  // ★★ --drive N：load() 之后手动推进虚拟时间 N 轮（每轮 600ms），
+  //    和 iv8 的 `for _ in range(14): eventLoop.sleep(600)` 完全对齐。
+  //    只有虚拟定时器模式下才有意义（--virtual-timers）。
+  const driveRounds = Number(opt('--drive', '0')) || 0;
+
   const prePostCount = bridge._state.postBodies.length;
   const tLoadStart = Date.now();
   const postInLoad = { at: null };
@@ -315,6 +321,25 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   }
   // ★ 页面脚本跑完，sensor 的 addEventListener 已注册好，此时派发鼠标轨迹。
   //   sensor 监听 mousemove 填 events.mouse —— 空数组是强 bot 信号。
+  // ★ 分阶段推进：每轮推进虚拟时间，轮间可以派发事件。
+  //   这才是"阶段之间派发鼠标"的正确姿势 —— 之前用真实定时器，
+  //   一轮里定时器是一个个异步触发的，宿主插不进去。
+  if (driveRounds > 0) {
+    for (let i = 0; i < driveRounds; i++) {
+      const n = env.page.advance(600);
+      const st2 = env.page.vtState();
+      log('[4.7] drive 第 %s 轮：执行 %s 个回调，虚拟时间 %sms，剩余 %s',
+        i + 1, n, st2.now, st2.pending);
+      if (flag('--mouse-between')) {
+        try { env.page.mouseTrail({ fast: true }); } catch (e) {}
+      }
+      if (bridge._state.postBodies.length > prePostCount) {
+        log('    第 %s 轮已出现 POST，提前结束推进', i + 1);
+        break;
+      }
+    }
+  }
+
   if (flag('--mouse-trail')) {
     try {
       env.page.mouseTrail({ fast: flag('--mouse-fast') });

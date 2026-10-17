@@ -80,7 +80,17 @@ async function solveOnce(host, opts) {
   if (!bin) throw new Error('找不到 Edge/Chrome');
 
   const port = (opts && opts.port) || PORT_BASE;
-  const prof = path.join(os.tmpdir(), 'r84pool-' + process.pid + '-' + Date.now());
+  // ★★ 持久化 profile：实测这是最大的性能杠杆。
+  //   新 profile：9635 ms（每次都要重新握手、下载 837KB sensor、跑完整挑战）
+  //   复用同一 profile：1528~1981 ms（TLS 会话、脚本缓存、cookie 都还在）
+  //   差 5~6 倍，而且省流量。
+  //
+  //   代价：profile 目录会累积（几百 MB），要定期清。
+  //   用 --fresh-profile 可以强制每次新开（用于对照测试）。
+  const persist = opts && opts.persistProfile;
+  const prof = persist
+    ? path.join(os.tmpdir(), 'r84pool-persist-' + host.replace(/[^a-z0-9]/gi, '_'))
+    : path.join(os.tmpdir(), 'r84pool-' + process.pid + '-' + Date.now());
 
   // ★ 必须有头（headless 在这类站上拿不到 token），窗口放屏幕外不打扰。
   // ★ 绝不覆盖 UA：UA 与 sec-ch-ua 必须同源，否则自相矛盾必被拦。
@@ -131,19 +141,27 @@ async function solveOnce(host, opts) {
     // 取 renewInSec 需要读响应体；用一次业务验证顺带确认真的通过
     const verify = await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }).then(() => null).catch(() => null);
 
+    // ★ 有效期用 cookie 的真实 expires，不要用 renewInSec。
+    //   实测 reese84 cookie 的 expires 是**30 天后**，而 renewInSec 790~890 只是
+    //   "建议多久之后主动续一次"，不代表 token 到时失效。
+    //   以前按 720 秒算，等于把可用期砍掉了 99%，白白多解了几十倍。
+    const r84 = jarc.find((c) => c.name === 'reese84');
+    const cookieExpires = r84 && r84.expires > 0 ? r84.expires * 1000 : 0;
     return {
       token,
       cookie,
       cookieCount: jarc.length,
       solvedAt: Date.now(),
-      // 服务端 renewInSec 是 790~890，保守按 720 秒（12 分钟）
-      expiresAt: Date.now() + 720 * 1000,
+      // 优先用 cookie expires；拿不到就保守按 12 小时
+      expiresAt: cookieExpires || (Date.now() + 12 * 3600 * 1000),
     };
   } finally {
     if (cdp) cdp.close();
     try { child.kill(); } catch (e) {}
-    // 清 profile，避免累积占用磁盘（一个 profile 几百 MB）
-    setTimeout(() => { try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) {} }, 3000);
+    // 只用非持久化 profile 时才清（持久化的要留着下次复用）
+    if (!(opts && opts.persistProfile)) {
+      setTimeout(() => { try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) {} }, 3000);
+    }
   }
 }
 
@@ -152,8 +170,10 @@ async function solveOnce(host, opts) {
 // ══════════════════════════════════════════════════════════════════
 const pools = new Map();   // host -> { slots: [{token,cookie,expiresAt,solvedAt}], solving: Promise|null }
 
-function poolOf(host, size) {
-  if (!pools.has(host)) pools.set(host, { slots: [], solving: null, size: size || 1 });
+function poolOf(host, size, persist) {
+  if (!pools.has(host)) {
+    pools.set(host, { slots: [], solving: null, size: size || 1, persistProfile: persist !== false });
+  }
   return pools.get(host);
 }
 
@@ -167,7 +187,7 @@ function alive(slot) {
  * 并发调用会排队等同一个 Promise）。
  */
 async function get(host, opts) {
-  const p = poolOf(host, opts && opts.size);
+  const p = poolOf(host, opts && opts.size, opts && opts.persistProfile);
   const now = Date.now();
 
   const good = p.slots.filter(alive).sort((a, b) => b.expiresAt - a.expiresAt);
