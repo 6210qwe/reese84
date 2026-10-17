@@ -195,7 +195,21 @@ const GL_EXTS = [
   'WEBGL_color_buffer_float', 'WEBGL_compressed_texture_s3tc', 'WEBGL_compressed_texture_s3tc_srgb',
   'WEBGL_debug_renderer_info', 'WEBGL_debug_shaders', 'WEBGL_depth_texture', 'WEBGL_draw_buffers',
   'WEBGL_lose_context', 'WEBGL_multi_draw', 'WEBGL_polygon_mode',
+  // WebGL2 专属（实测真实 Edge 存在，缺失会让 webgl_meta 一律对不上）
+  'EXT_color_buffer_float', 'EXT_color_buffer_half_float', 'EXT_render_snorm',
+  'EXT_texture_norm16', 'OES_draw_buffers_indexed', 'OES_sample_variables',
+  'OVR_multiview2', 'WEBGL_provoking_vertex', 'WEBGL_clip_cull_distance',
+  'KHR_parallel_shader_compile', 'EXT_conservative_depth',
 ];
+
+// ★ WebGL1 与 WebGL2 的扩展集不同：EXT_color_buffer_float 只有 WebGL2 有。
+//   混在一起会让 webgl_meta 哈希对上但 supported_extensions 名单不对，反过来也一样。
+const GL2_ONLY = new Set([
+  'EXT_color_buffer_float', 'EXT_render_snorm', 'EXT_texture_norm16',
+  'OES_draw_buffers_indexed', 'OES_sample_variables', 'OVR_multiview2',
+  'WEBGL_provoking_vertex', 'WEBGL_clip_cull_distance', 'EXT_conservative_depth',
+  'WEBGL_multi_draw',
+]);
 
 class WebGLRenderingContext {
   constructor(canvas) {
@@ -248,10 +262,13 @@ function __installGL(proto, isGL2) {
     if (/instanced_arrays/.test(n)) return { VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 35070, drawArraysInstancedANGLE() {}, drawElementsInstancedANGLE() {}, vertexAttribDivisorANGLE() {} };
     if (/vertex_array_object/.test(n)) return { createVertexArrayOES() { return {}; }, bindVertexArrayOES() {}, deleteVertexArrayOES() {} };
     if (/texture_filter_anisotropic/.test(n)) return { TEXTURE_MAX_ANISOTROPY_EXT: 34046, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 34047 };
-    if (GL_EXTS.indexOf(n) >= 0) return {};
+    if (GL_EXTS.indexOf(n) >= 0 && (isGL2 || !GL2_ONLY.has(n))) return {};
     return null;
   });
-  defMethod(proto, 'getSupportedExtensions', function () { return GL_EXTS.slice(); });
+  defMethod(proto, 'getSupportedExtensions', function () {
+    // isGL2 由 __installGL 的第二个参数决定，闭包捕获
+    return GL_EXTS.filter((n) => (isGL2 ? true : !GL2_ONLY.has(n))).slice();
+  });
   defMethod(proto, 'getShaderPrecisionFormat', function () {
     return { precision: 23, rangeMin: 127, rangeMax: 127 };
   });

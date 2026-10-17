@@ -327,8 +327,9 @@ const __nav = {
   webdriver: __BN.webdriver !== undefined ? __BN.webdriver : false,
   pdfViewerEnabled: __BN.pdfViewerEnabled !== undefined ? __BN.pdfViewerEnabled : true,
 };
-// deviceMemory：Chrome 141 实测为 undefined，只有存在值时才定义
-if (__BN.deviceMemory !== undefined) __nav.deviceMemory = __BN.deviceMemory;
+// deviceMemory：Chrome 规范上限是 8，UA 声称 Chrome 就必须给 <=8 的值。
+// 用 Edge 实测的 16 会和 UA 矛盾（Edge 不做这个封顶，Chrome 做）。
+__nav.deviceMemory = __BN.deviceMemory !== undefined ? Math.min(8, __BN.deviceMemory) : 8;
 
 class PluginArray {
   constructor(items) {
@@ -342,6 +343,8 @@ class PluginArray {
   get length() { return st(this).items.length; }
   item(i) { return st(this).items[i] || null; }
   namedItem(n) { return st(this).items.find((x) => x.name === n) || null; }
+  // 真实浏览器有 plugins.refresh()，没有就是个 typeof 差异
+  refresh() { return undefined; }
   [Symbol.iterator]() { return st(this).items[Symbol.iterator](); }
 }
 Object.defineProperty(PluginArray.prototype, Symbol.toStringTag, { value: 'PluginArray', configurable: true });
@@ -370,13 +373,19 @@ function __buildPlugins() {
     { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', desc: 'Portable Document Format', mimes: ['application/pdf', 'text/pdf'] },
   ];
   const mimeArr = [];
+  // ★ MimeTypeArray 必须按 type 去重。
+  //   真实 Chrome 是 5 个 plugin、2 个 mimeType（application/pdf、text/pdf）——
+  //   每个 plugin 都挂同样两个 mime，但它们指向同一份 MimeType 对象。
+  //   不去重的话我们会报 10 个，navigator.mimeTypes.length 一眼假。
+  const mimeByType = new Map();
   const plugins = defs.map((d) => {
     const mt = d.mimes.map((t) => {
-      const m = {
-        type: t, suffixes: 'pdf', description: d.desc,
-        enabledPlugin: null,
-      };
-      mimeArr.push(m);
+      let m = mimeByType.get(t);
+      if (!m) {
+        m = { type: t, suffixes: 'pdf', description: d.desc, enabledPlugin: null };
+        mimeByType.set(t, m);
+        mimeArr.push(m);
+      }
       return m;
     });
     const p = {
@@ -391,6 +400,163 @@ function __buildPlugins() {
   });
   return { plugins: new PluginArray(plugins), mimeTypes: new MimeTypeArray(mimeArr) };
 }
+
+// ══════════════════════════════════════════════════════════════════
+// 补齐 13 个"存在但缺"的 API（probe_coverage.js 差集跑出来的）
+//   缺 API 比错值更致命：sensor 读 typeof 拿到 undefined 后通常不报错，
+//   而是直接跳过整段采集（events.touch 整块没了、video 解码能力整块没了）。
+// ══════════════════════════════════════════════════════════════════
+class Touch {
+  constructor(init) {
+    const s = st(this);
+    s.identifier = (init && init.identifier) || 0;
+    s.target = (init && init.target) || null;
+    s.clientX = (init && init.clientX) || 0;
+    s.clientY = (init && init.clientY) || 0;
+    s.screenX = (init && init.screenX) || 0;
+    s.screenY = (init && init.screenY) || 0;
+    s.pageX = s.clientX; s.pageY = s.clientY;
+    s.radiusX = (init && init.radiusX) || 0;
+    s.radiusY = (init && init.radiusY) || 0;
+    s.rotationAngle = (init && init.rotationAngle) || 0;
+    s.force = (init && init.force) || 1;
+  }
+}
+for (const k of ['identifier', 'target', 'clientX', 'clientY', 'screenX', 'screenY', 'pageX', 'pageY', 'radiusX', 'radiusY', 'rotationAngle', 'force']) {
+  Object.defineProperty(Touch.prototype, k, { get() { return st(this)[k]; }, configurable: true, enumerable: true });
+}
+Object.defineProperty(Touch.prototype, Symbol.toStringTag, { value: 'Touch', configurable: true });
+
+class TouchList {
+  constructor(items) { st(this).items = items || []; }
+  get length() { return st(this).items.length; }
+  item(i) { return st(this).items[i] || null; }
+  [Symbol.iterator]() { return st(this).items[Symbol.iterator](); }
+}
+Object.defineProperty(TouchList.prototype, Symbol.toStringTag, { value: 'TouchList', configurable: true });
+
+class TouchEvent extends UIEvent {
+  constructor(type, init) {
+    super(type, init);
+    const s = st(this);
+    s.touches = (init && init.touches) || new TouchList([]);
+    s.targetTouches = (init && init.targetTouches) || new TouchList([]);
+    s.changedTouches = (init && init.changedTouches) || new TouchList([]);
+    s.altKey = false; s.ctrlKey = false; s.metaKey = false; s.shiftKey = false;
+  }
+}
+for (const k of ['touches', 'targetTouches', 'changedTouches', 'altKey', 'ctrlKey', 'metaKey', 'shiftKey']) {
+  Object.defineProperty(TouchEvent.prototype, k, { get() { return st(this)[k]; }, configurable: true, enumerable: true });
+}
+Object.defineProperty(TouchEvent.prototype, Symbol.toStringTag, { value: 'TouchEvent', configurable: true });
+
+class PointerEvent extends MouseEvent {
+  constructor(type, init) {
+    super(type, init);
+    const s = st(this);
+    s.pointerId = (init && init.pointerId) || 1;
+    s.pointerType = (init && init.pointerType) || 'mouse';
+    s.width = 1; s.height = 1; s.pressure = 0.5;
+    s.tiltX = 0; s.tiltY = 0; s.twist = 0;
+    s.isPrimary = true;
+    s.pointerWidth = 1; s.pointerHeight = 1;
+  }
+}
+for (const k of ['pointerId', 'pointerType', 'width', 'height', 'pressure', 'tiltX', 'tiltY', 'twist', 'isPrimary']) {
+  Object.defineProperty(PointerEvent.prototype, k, { get() { return st(this)[k]; }, configurable: true, enumerable: true });
+}
+Object.defineProperty(PointerEvent.prototype, Symbol.toStringTag, { value: 'PointerEvent', configurable: true });
+
+class MediaRecorder extends EventTarget {
+  constructor(stream, opts) {
+    super();
+    st(this).stream = stream;
+    st(this).state = 'inactive';
+    st(this).mimeType = (opts && opts.mimeType) || '';
+  }
+  get state() { return st(this).state; }
+  get mimeType() { return st(this).mimeType; }
+  get stream() { return st(this).stream; }
+  start() { st(this).state = 'recording'; }
+  stop() { st(this).state = 'inactive'; }
+  pause() { st(this).state = 'paused'; }
+  resume() { st(this).state = 'recording'; }
+  requestData() {}
+  static isTypeSupported(t) { return /^(video|audio)\/(webm|mp4)/.test(String(t)); }
+}
+Object.defineProperty(MediaRecorder.prototype, Symbol.toStringTag, { value: 'MediaRecorder', configurable: true });
+
+class SharedWorker {
+  constructor(url, name, opts) {
+    st(this).port = {
+      postMessage() {}, start() {}, close() {},
+      addEventListener() {}, removeEventListener() {},
+      onmessage: null, onmessageerror: null,
+    };
+  }
+  get port() { return st(this).port; }
+}
+Object.defineProperty(SharedWorker.prototype, Symbol.toStringTag, { value: 'SharedWorker', configurable: true });
+
+// navigator 上补齐的成员：用原型 getter，所有实例一致。
+// ★ 必须包成函数延迟执行：class 有 TDZ，这段写在 class Navigator 之前会
+//   "Cannot access 'Navigator' before initialization"。
+function __decorateNavigator() {
+Object.defineProperties(Navigator.prototype, {
+  getBattery: {
+    value: nativeLike(function getBattery() {
+      return Promise.resolve({
+        charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1,
+        onchargingchange: null, onchargingtimechange: null, ondischargingtimechange: null, onlevelchange: null,
+        addEventListener() {}, removeEventListener() {},
+      });
+    }, 'getBattery'),
+    configurable: true, writable: true,
+  },
+  mediaCapabilities: {
+    get() {
+      if (!st(this).mediaCaps) {
+        st(this).mediaCaps = {
+          decodingInfo() { return Promise.resolve({ supported: true, smooth: true, powerEfficient: true }); },
+          encodingInfo() { return Promise.resolve({ supported: true, smooth: true, powerEfficient: true }); },
+        };
+      }
+      return st(this).mediaCaps;
+    },
+    configurable: true, enumerable: true,
+  },
+  serviceWorker: {
+    get() {
+      if (!st(this).sw) {
+        st(this).sw = {
+          controller: null,
+          ready: new Promise(() => {}),
+          register() { return new Promise(() => {}); },
+          getRegistrations() { return Promise.resolve([]); },
+          addEventListener() {}, removeEventListener() {},
+        };
+      }
+      return st(this).sw;
+    },
+    configurable: true, enumerable: true,
+  },
+  locks: {
+    get() {
+      if (!st(this).locks) {
+        st(this).locks = { request(name, cb) { return Promise.resolve(typeof cb === 'function' ? cb({ name, mode: 'exclusive' }) : undefined); }, query() { return Promise.resolve({ held: [], pending: [] }); } };
+      }
+      return st(this).locks;
+    },
+    configurable: true, enumerable: true,
+  },
+});
+}
+
+// reportError：Chrome 有，缺了是 typeof 差异
+function reportError(e) {
+  try { __HOST__.log('reportError: %s', e && e.message); } catch (err) {}
+}
+nativeLike(reportError, 'reportError');
 
 class Navigator extends EventTarget {
   constructor() {
@@ -702,7 +868,10 @@ class HTMLMediaElement extends HTMLElement {
     return nativeLike(function (t) {
       const v = String(t);
       if (!v) return '';
-      if (/codecs=/i.test(v)) return /^(audio|video)\/(mp4|webm|ogg)/.test(v) ? 'probably' : 'maybe';
+      // Chrome 从 2019 起移除了 Ogg Theora，'video/ogg; codecs="theora"' 返回空串。
+      // 我们之前一律回 'probably'，和 UA 里的 Chrome 141 矛盾。
+      if (/ogg/i.test(v)) return '';
+      if (/codecs=/i.test(v)) return /^(audio|video)\/(mp4|webm)/.test(v) ? 'probably' : 'maybe';
       return /^(audio|video)\//.test(v) ? 'maybe' : '';
     }, 'canPlayType');
   }
@@ -967,7 +1136,11 @@ function __makeDocument(url) {
 // Window
 // ══════════════════════════════════════════════════════════════════
 
-let __document = new Document();
+// HTMLDocument 必须在 Document 声明之后定义（class 有 TDZ，早引用会 ReferenceError）
+class HTMLDocument extends Document {}
+Object.defineProperty(HTMLDocument.prototype, Symbol.toStringTag, { value: 'HTMLDocument', configurable: true });
+
+let __document = new HTMLDocument();
 
 // ★ window 必须是 realm 的全局对象本身。
 //   浏览器里 window === globalThis，sensor 大量直接写 navigator.x / document.x
@@ -1531,6 +1704,17 @@ function __installWindow() {
   //   而浏览器里必须是 "function Navigator() { [native code] }"。
   //   reese84 会显式检查这个（重点检查 Window 与 eval）。
   // ══════════════════════════════════════════════════════════════
+  __decorateNavigator();
+
+  defValue(w, 'Touch', Touch, true);
+  defValue(w, 'TouchList', TouchList, true);
+  defValue(w, 'TouchEvent', TouchEvent, true);
+  defValue(w, 'PointerEvent', PointerEvent, true);
+  defValue(w, 'MediaRecorder', MediaRecorder, true);
+  defValue(w, 'SharedWorker', SharedWorker, true);
+  defValue(w, 'HTMLDocument', HTMLDocument, true);
+  defValue(w, 'reportError', reportError, true);
+
   const __STANDARD_CTORS = [
     'Window', 'Navigator', 'Document', 'HTMLDocument', 'Node', 'Element', 'HTMLElement',
     'EventTarget', 'Event', 'CustomEvent', 'UIEvent', 'MouseEvent', 'KeyboardEvent',
@@ -1554,6 +1738,8 @@ function __installWindow() {
     'FormData', 'WebSocket', 'EventSource', 'FileReader', 'OffscreenCanvas',
     'DOMRect', 'DOMRectReadOnly', 'DOMTokenList', 'HTMLCollection', 'NodeList',
     'Image', 'Audio', 'Option', 'Path2D', 'XMLSerializer', 'DOMParser',
+    'Touch', 'TouchList', 'TouchEvent', 'PointerEvent', 'MediaRecorder',
+    'SharedWorker', 'HTMLDocument', 'IDBFactory', 'StorageManager',
   ];
   for (const n of __STANDARD_CTORS) {
     if (typeof w[n] === 'function') nativeClass(w[n], n);
@@ -1573,8 +1759,101 @@ function __installWindow() {
   // 原型链自检加固（Function.prototype.toString/call/apply/bind + getOwnPropertyNames）
   __hardenPrototypeChain();
 
+  // ★ Object.prototype.toString.call(window) 必须是 "[object Window]"。
+  //   我们是普通对象，默认给 "[object Object]" —— 这是一眼可判的假环境特征，
+  //   而且 reese84 的 window 字段里就有 toString 类采集。
+  //   用 Symbol.toStringTag 实现（symbol 属性不会出现在 getOwnPropertyNames 里）。
+  try {
+    Object.defineProperty(w, Symbol.toStringTag, { value: 'Window', configurable: true });
+  } catch (e) {}
+
+  // Window 构造器上的常量（真实浏览器有，缺了 getOwnPropertyNames(Window) 就少两项）
+  try {
+    Object.defineProperty(Window, 'PERSISTENT', { value: 1, configurable: true, enumerable: false, writable: false });
+    Object.defineProperty(Window, 'TEMPORARY', { value: 2, configurable: true, enumerable: false, writable: false });
+  } catch (e) {}
+
+  // ══════════════════════════════════════════════════════════════
+  // 按真实浏览器的属性表补齐缺失的 window 成员
+  //
+  // 为什么必须做：payload 的 schema 里有三个字段专门采这个
+  //   window_object_get_own_property_names_a / _b / _last_30
+  // 实测真实 Edge：getOwnPropertyNames(window).length = 1239（1029 个 function、
+  // 180 个 object），我们手写环境只有 292。差 947 项，这三个字段永远对不上。
+  //
+  // 做法：拿 tools/dump_window_names.js 从真实浏览器导出的
+  // [名字, typeof, toStringTag, 可枚举] 四元组，把缺的名字按类型合成出来。
+  // 只补名字不管类型会被 typeof 抽查识破，所以类型和 toStringTag 都要对。
+  // ══════════════════════════════════════════════════════════════
+  __synthesizeWindowNames(w);
+
   // 显式的宿主可见性诊断钩子（默认不可枚举，避免被 Object.keys 看到）
   Object.defineProperty(w, '__diag', { value: __diagApi, configurable: true, enumerable: false });
+}
+
+/**
+ * 按导出的属性表合成缺失的 window 成员。
+ * 已存在的名字一律不动 —— 手写的实现永远比合成的准。
+ */
+function __synthesizeWindowNames(w) {
+  const table = __CFG.windowNames || [];
+  if (!table.length) return;
+  let added = 0;
+  for (const row of table) {
+    const name = row[0], type = row[1], tag = row[2], en = row[3] === 1;
+    try {
+      if (name in w) {
+        // 已存在：不重建，但把"可枚举性"对齐。
+        //   真实 Chrome 里 window 上大部分构造器是不可枚举的，
+        //   我们 defValue(..., true) 一律设成可枚举 → Object.keys(window) 会虚高
+        //   （实测 366 vs 浏览器 243）。这一步只改 enumerable，不动值。
+        try {
+          const d = Object.getOwnPropertyDescriptor(w, name);
+          if (d && d.configurable && d.enumerable !== en) {
+            // ★ 描述符必须二选一：数据属性(value/writable) 或 访问器(get/set)。
+            //   同时给 value 和 get 会直接 TypeError，被下面的 catch 吞掉，
+            //   表现就是"改了但没生效"——这个坑我踩了一次才发现。
+            if ('get' in d || 'set' in d) {
+              Object.defineProperty(w, name, {
+                get: d.get, set: d.set, configurable: true, enumerable: en,
+              });
+            } else {
+              Object.defineProperty(w, name, {
+                value: d.value, writable: d.writable, configurable: true, enumerable: en,
+              });
+            }
+          }
+        } catch (e) {}
+        continue;
+      }
+      if (/^(__|_)/.test(name)) continue;           // 别碰宿主内部标识
+      let v;
+      if (type === 'function') {
+        // 造一个"名字对得上、toString 是 native"的空构造器
+        const stub = ({ [name]: function () {} })[name];
+        nativeClass(stub, name);
+        v = stub;
+      } else if (type === 'object') {
+        v = {};
+        if (tag) {
+          try { Object.defineProperty(v, Symbol.toStringTag, { value: tag, configurable: true }); } catch (e) {}
+        }
+      } else if (type === 'number') {
+        v = 0;
+      } else if (type === 'string') {
+        v = '';
+      } else if (type === 'boolean') {
+        v = false;
+      } else {
+        v = undefined;
+      }
+      Object.defineProperty(w, name, {
+        value: v, writable: true, configurable: true, enumerable: en,
+      });
+      added++;
+    } catch (e) { /* 不可写的就跳过 */ }
+  }
+  try { __HOST__.log('window 成员合成：补了 %s 个，总数 %s', added, Object.getOwnPropertyNames(w).length); } catch (e) {}
 }
 
 function __makeLocation() {

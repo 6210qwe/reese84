@@ -188,6 +188,20 @@ function createBridge(cfg) {
   const timeOrigin = Date.now();
   const t0 = process.hrtime.bigint();
   const t0ms = Number(t0) / 1e6;
+  // ★★ 把 baseline 挂进 cfg。
+  //   踩过的坑：03-window 里所有回放分支都写的是 __CFG.baseline.xxx，
+  //   但 runner 从来没往 cfg 上放 baseline —— 于是"回放真实采样值"这段代码永远是死代码，
+  //   一直走的是 || 后面的硬编码兜底（hardwareConcurrency 落到 8，本机实际 16）。
+  //   这类"写了但没接线"的 bug 不会报错，只会让指纹悄悄回到猜的值。
+  if (!cfg.baseline) cfg.baseline = BASELINE;
+
+  // 真实浏览器 window 自有属性表（tools/dump_window_names.js 导出）
+  let WINDOW_NAMES = [];
+  try {
+    WINDOW_NAMES = JSON.parse(fs.readFileSync(path.join(__dirname, 'env', 'window_names.json'), 'utf8'));
+  } catch (e) { WINDOW_NAMES = []; }
+  if (!cfg.windowNames) cfg.windowNames = WINDOW_NAMES;
+
   const state = {
     requests: [],       // 所有经过 bridge 的真实请求（诊断用）
     postBodies: [],     // 抓到的 POST body

@@ -34,6 +34,7 @@ const VERBOSE = flag('-v') || flag('--verbose');
 
 function log(...a) { console.log(...a); }
 function vlog(...a) { if (VERBOSE) console.log(...a); }
+function nativeLikeNoop() {}
 
 function buildEnvSource() {
   const parts = ENV_FILES.map((f) => {
@@ -183,6 +184,29 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   }
   log('[4] 补环境装配完成 (%sms)', Date.now() - t0);
 
+  // ── --trace-stringify：抓"编码前的明文指纹表"──
+  // 思路：payload 里的 p 是高熵密文，但 sensor 一定得先把指纹组成普通对象，
+  // 而把它变成字符串只能靠 JSON.stringify（浏览器里没有别的通用途径）。
+  // 在 vm 域里挂一层，凡是长度 > 800 且不像 POST 外层的 JSON，就落盘。
+  // 这是唯一能在不逆向 JSVMP 的前提下"看见答案"的办法。
+  if (flag('--trace-stringify')) {
+    // ctx.JSON 从外部读不到（沙箱属性≠上下文全局），必须在上下文内部装钩子。
+    const hookSrc = `(function(){ 
+      globalThis.__plains = [];
+      var og = JSON.stringify;
+      JSON.stringify = function (v, r, sp) {
+        var out = og.call(this, v, r, sp);
+        try {
+          if (typeof out === 'string' && out.length > 800 && out.indexOf('{"solution"') !== 0) {
+            globalThis.__plains.push(out);
+          }
+        } catch (e) {}
+        return out;
+      };
+    })();`;
+    vm.runInContext(hookSrc, ctx, { filename: 'trace-stringify.js' });
+  }
+
   // ③ 载入挑战页，执行脚本（sensor 在这里被 append 并同步 eval）
   const prePostCount = bridge._state.postBodies.length;
   try {
@@ -269,6 +293,18 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     try { log('   reese84 状态: %j', env.page.inspectReese84()); } catch (e) {}
     fs.writeFileSync(path.join(__dirname, '..', '_diag_fail.json'), JSON.stringify(out, null, 2));
     process.exit(5);
+  }
+
+  if (flag('--trace-stringify')) {
+    try {
+      const plains = vm.runInContext('JSON.stringify(globalThis.__plains || [])', ctx);
+      const arr = JSON.parse(plains);
+      arr.forEach((t, i) => {
+        fs.writeFileSync(path.join(__dirname, '..', '_plain_payload_' + (i + 1) + '.json'), t, 'utf8');
+        log('    [stringify] 明文 #%s len=%s 键数≈%s', i + 1, t.length, (t.match(/"[a-zA-Z_0-9]+":/g) || []).length);
+      });
+      if (!arr.length) log('    [stringify] 未捕获到明文（sensor 没用 JSON.stringify，或走了别的序列化）');
+    } catch (e) { log('    [stringify] 回收失败: %s', e && e.message); }
   }
 
   out.bodyLen = posted.body.length;
