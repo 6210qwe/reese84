@@ -1,0 +1,12 @@
+{
+  "sans-serif": "Noto Sans SC",
+  "serif": "Noto Serif SC",
+  "monospace": "NSimSun",
+  "system-ui": "Microsoft YaHei UI",
+  "cursive": "KaiTi",
+  "fantasy": "Impact",
+  "-apple-system": "Noto Sans SC",
+  "ui-sans-serif": "Noto Sans SC",
+  "ui-serif": "Noto Sans SC",
+  "ui-monospace": "Noto Sans SC"
+}
