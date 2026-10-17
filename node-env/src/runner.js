@@ -123,7 +123,15 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   let sensorCode = null;
   // sensor 内容对同一 build 恒定（不同 ?s= 的 sha256 一致），按路径缓存可省 30~70s
   const cacheFile = path.join(__dirname, '..', '_sensor_cache.json');
-  const sensorPath = sensorUrl.split('?')[0];
+  const sensorFull = sensorUrl.split('?')[0];
+  // ★ 按"目录"缓存，而不是按完整路径。
+  //   实测（对照 52pojie《某航司 Reese84 补环境篇》的"固定链接"发现 + 本站验证）：
+  //     GET /<单词目录>/                → 200  842710B  text/javascript   ← 稳定
+  //     GET /<单词目录>/<40位hex>?s=xx  → 200  838308B  text/javascript   ← hex 每次轮换
+  //   单词目录部分是不变的，40 位 hex 每次挑战都换。
+  //   之前按完整路径缓存 → 一换 hex 就失效，每次都得重下 837KB（国际链路 60~90 秒）。
+  const dirMatch = /^(\/[^/]+\/)/.exec(sensorFull);
+  const sensorPath = dirMatch ? dirMatch[1] : sensorFull;
   if (!flag('--challenge-only') && !flag('--fresh')) {
     try {
       const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -335,13 +343,23 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     if (v) {
       const marks = blockMarks(v.text);
       const isChallenge = v.text.length > 500 && /scriptElement\.src|reeseSkipExpirationCheck/.test(v.text);
+      // ★ X-Iinfo 判据（见 docs/11）：
+      //   B10() = 挑战页； B12() = 明确拦截； 无 B 段 + 有 CT() = 真实放行
+      const xinfo = (v.headers && (v.headers['X-Iinfo'] || v.headers['x-iinfo'])) || '';
+      const hasB = /\bB1[0-9]?\(/.test(xinfo);
+      const hasCT = / CT\(/.test(xinfo);
       out.verify = {
         status: v.status, len: v.text.length,
-        blocked: marks.length > 0 || isChallenge,
+        blocked: marks.length > 0 || isChallenge || hasB,
+        passed: !marks.length && !isChallenge && !hasB && hasCT,
+        xinfo, hasB, hasCT,
         marks, isChallenge,
       };
-      log('[7] 业务验证 GET / → HTTP=%s len=%s 被拦=%s marks=%s',
-        v.status, v.text.length, out.verify.blocked, marks.join(',') || 'none');
+      log('[7] 业务验证 GET / → HTTP=%s len=%s 被拦=%s passed=%s',
+        v.status, v.text.length, out.verify.blocked, out.verify.passed);
+      log('    X-Iinfo: %s', xinfo);
+      log('    判据：B段=%s  CT组=%s  marks=%s', hasB ? '有(未通过)' : '无', hasCT ? '有' : '无',
+        marks.join(',') || 'none');
     }
   }
 

@@ -93,7 +93,27 @@ detect_protection.py 的结果
 ⇒ **curl 绝不能无脑加 `--compressed`**（它会带出 `Accept-Encoding`）。
 这个坑我踩了两次，第二次是因为忘了第一次。
 
-### 2.3 路线选择
+### 2.3 sensor 路径：按"目录"缓存，不要按完整路径
+
+实测（本站 + 52pojie 同靶站案例）：
+
+```
+GET /<单词目录>/                → 200  842710B  text/javascript   ← 稳定，可用于缓存
+GET /<单词目录>/<40位hex>?s=xx  → 200  838308B  text/javascript   ← hex 每次挑战都换
+```
+
+**单词目录不变，只有 40 位 hex 轮换。** 按完整路径缓存会每次失效，白白重下 837KB
+（国际链路 60~90 秒）。正确做法：
+
+```js
+const dir = /^(\/[^/]+\/)/.exec(urlWithoutQuery)[1];   // 只取第一层目录做缓存 key
+```
+
+52pojie 还提到存在一条"固定链接"做**有效期查询/激活**（POST 上一轮 token，响应 token 不变，
+`old_token` 可空）。本站验证：**GET 成立**（842710B），**POST 试了 4 种 body 全部 400**。
+遇到别的站可以试这条路。
+
+### 2.6 路线选择
 
 | 路线 | 状态 | 用什么 |
 |---|---|---|
@@ -104,7 +124,32 @@ detect_protection.py 的结果
 
 **先跑 iv8，跑通就收工。** 只有必须"纯 Node 单进程"时再碰补环境。
 
-### 2.4 验证门禁（缺一条都不能说成功）
+### 2.4 ★ 验证门禁：用 `X-Iinfo` 的 B 段，不要看 body（2026-10 实测校正）
+
+**三方对照（同 IP 同时段，同一个 curl）**：
+
+| 特征 | iv8 通过 | 我们被拦 | 挑战页 |
+|---|---|---|---|
+| HTTP | **404** len=9 / **302** | 200 len≈1038 | 200 len=6058 |
+| **B 段** | **无** | **B12(14,0,0)** | B10(14,0,0) |
+| `CT(...)` | **有** `CT(247 248 0)` | 无 | 无 |
+| `q(...)` | **`q(0 0 5 -1)`** | `q(0 -1 -1 1)` | `q(0 -1 -1 -1)` |
+| `r(...)` | **`r(7 7)`** | `r(1 -1)` | `r(0 -1)` |
+| flag 组 | `NNNN` | **`PNNN`** | `NNNN` |
+| `U` 段 | **`U11`** | `U18` | `U18` |
+
+```python
+passed  = (' CT(' in xinfo) and (' B1' not in xinfo) and not any(m in body for m in BLOCK_MARKS)
+blocked = ('B12(' in xinfo) or ('B10(' in xinfo) or any(m in body for m in BLOCK_MARKS)
+```
+
+**这一条推翻了我以前所有的判据**：`token is not None` / `status==200` /
+`"Pardon Our Interruption" not in body` / `B10 代表通过` —— **四个全错**。
+B10 是挑战页（还没进去），B12 是明确拦截，**无 B + 有 CT 才是真放行**。
+
+> `http.dev/x-iinfo` 说明这些字段 Imperva 不公开且会随版本变，所以只做粗判、保留原始串。
+
+### 2.5 验证门禁（旧版，作为 body 层双保险保留）
 
 ```bash
 # 带 token 打受保护路径，必须 404（源站真实 404）且不含任何拦截特征
