@@ -103,8 +103,13 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     fastCanvas: flag('--fast-canvas'),
     jumpAtDate: Number(opt('--jump-at-date', '0')) || 0,
     timerScale: Number(opt('--timer-scale', '1')) || 1,
+    fakeStart: Number(opt('--fake-start', '0')) || 0,
+    traceDate: flag('--trace-date'),
+    warpMs: Number(opt('--warp-ms', '0')) || 0,
+    warpRatio: Number(opt('--warp-ratio', '0.09')) || 0.09,
   };
 
+  const preJumpMs = Number(opt('--pre-jump', '0')) || 0;
   const bridge = createBridge(cfg);
   const jar = bridge._jar;
 
@@ -184,11 +189,28 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   }
   log('[4] 补环境装配完成 (%sms)', Date.now() - t0);
 
+  // ★ --pre-jump <ms>：在 sensor 开始执行前把时钟前推。
+  //   payload 的 total 单位是毫秒，真实值 6570~7442（约 7 秒 = 下载+解析 837KB sensor 的时间）。
+  //   我们是 curl 下完再同步 eval，这段耗时是 0，所以 total 只有 630。
+  //   在脚本开始前垫高，总耗时对得上，而 phase1（采集块本身）不受影响。
+  if (preJumpMs) {
+    env.page.addClockJump(preJumpMs);
+    log('[4.1] 时钟预垫 %sms（模拟 sensor 下载+解析耗时）', preJumpMs);
+  }
+
   // ── --trace-stringify：抓"编码前的明文指纹表"──
   // 思路：payload 里的 p 是高熵密文，但 sensor 一定得先把指纹组成普通对象，
   // 而把它变成字符串只能靠 JSON.stringify（浏览器里没有别的通用途径）。
   // 在 vm 域里挂一层，凡是长度 > 800 且不像 POST 外层的 JSON，就落盘。
   // 这是唯一能在不逆向 JSVMP 的前提下"看见答案"的办法。
+  if (flag('--trace-date')) {
+    try {
+      const raw = vm.runInContext('JSON.stringify(globalThis.__dateTrace || [])', ctx);
+      fs.writeFileSync(path.join(__dirname, '..', '_date_trace.json'), raw, 'utf8');
+      log('    [date-trace] 已导出 %s 次调用', JSON.parse(raw).length);
+    } catch (e) { log('    [date-trace] 失败: %s', e && e.message); }
+  }
+
   if (flag('--trace-stringify')) {
     // ctx.JSON 从外部读不到（沙箱属性≠上下文全局），必须在上下文内部装钩子。
     const hookSrc = `(function(){ 
@@ -293,6 +315,14 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     try { log('   reese84 状态: %j', env.page.inspectReese84()); } catch (e) {}
     fs.writeFileSync(path.join(__dirname, '..', '_diag_fail.json'), JSON.stringify(out, null, 2));
     process.exit(5);
+  }
+
+  if (flag('--trace-date')) {
+    try {
+      const raw = vm.runInContext('JSON.stringify(globalThis.__dateTrace || [])', ctx);
+      fs.writeFileSync(path.join(__dirname, '..', '_date_trace.json'), raw, 'utf8');
+      log('    [date-trace] 已导出 %s 次调用', JSON.parse(raw).length);
+    } catch (e) { log('    [date-trace] 失败: %s', e && e.message); }
   }
 
   if (flag('--trace-stringify')) {

@@ -261,6 +261,25 @@ function __makeSubWindow(frameEl) {
 
 const __pageApi = {
   load: __pageLoad,
+  // ★★ 宿主在"页面开始执行"之前把时钟往前推。
+  //
+  //   为什么需要这个（这轮最重要的认知修正）：
+  //     payload 里的 phase1 / total 这两个数字单位是**毫秒**，不是微秒。
+  //     我把 iv8 的 performance.now 跨度量出来是 6534ms，而它的 total=6570 —— 对上了。
+  //
+  //     真实形态是：phase1=46ms、total=7083ms。
+  //     也就是说：7 秒里只有 46 毫秒在真正"采集"，剩下 7 秒是
+  //     加载 + 解析 837KB sensor 的时间。
+  //
+  //     我们是 curl 下完 837KB 再同步 eval，从"脚本开始"到"询问结束"几乎零间隔，
+  //     所以 total 只有 630ms（而 phase1 占 597ms，比例 95% 完全颠倒）。
+  //
+  //   正确做法：在 sensor 脚本开始执行**之前**把时钟垫高几秒，
+  //   让 total 变成"7 秒"，而 phase1 只统计中间那段采集块，保持小值。
+  //   之前的 --clock-jump 是在 canvas 取图时跳变（属于采集块内部），
+  //   所以只会把 phase1 一起顶大 —— 位置错了。
+  addClockJump(ms) { __clockJump += Number(ms) || 0; },
+  clockJump() { return __clockJump; },
   getDocument: () => __document,
   getWindow: () => __window,
   // 供宿主在需要时核对 DOM

@@ -75,10 +75,13 @@ const marks = (t) => BLOCK.filter((x) => String(t || '').includes(x));
   if (!bin) throw new Error('找不到浏览器');
   const prof = path.join(require('os').tmpdir(), 'bsolve-' + Date.now());
   console.log('启动: ' + bin);
-  const child = spawn(bin, ['--headless=new', '--no-first-run', '--no-default-browser-check',
+  // ★ 必须有头。headless=new 在这站上 90 秒都拿不到 token（被识别）。
+  //   有头模式窗口放屏幕外，不打扰使用。
+  const child = spawn(bin, ['--no-first-run', '--no-default-browser-check',
     '--disable-blink-features=AutomationControlled',
-    '--user-data-dir=' + prof, '--remote-debugging-port=' + PORT, '--window-size=1366,768', 'about:blank'],
-    { stdio: 'ignore', windowsHide: true });
+    '--window-position=-2400,-2400', '--window-size=1366,768',
+    '--user-data-dir=' + prof, '--remote-debugging-port=' + PORT, 'about:blank'],
+    { stdio: 'ignore', windowsHide: false });
   for (let i = 0; i < 40; i++) {
     try { await (await fetch('http://127.0.0.1:' + PORT + '/json/version')).json(); break; } catch (e) { await sleep(250); }
   }
@@ -89,9 +92,12 @@ const marks = (t) => BLOCK.filter((x) => String(t || '').includes(x));
   await cdp.send('Page.enable');
   await cdp.send('Network.enable');
   await cdp.send('Runtime.enable');
-  await cdp.send('Emulation.setUserAgentOverride', {
-    userAgent: UA, platform: 'Win32', acceptLanguage: 'en-US,en',
-  });
+  // ★ 不要覆盖 UA！
+  //   第一次跑我用 Emulation.setUserAgentOverride 把 UA 改成了 Chrome/141，
+  //   但浏览器本体是 Edge/154 —— 于是 UA 说 Chrome、sec-ch-ua 说 Edge，自相矛盾，
+  //   90 秒都拿不到 token。真实浏览器要用它自己的 UA，不能改。
+  //   （要改就必须连 navigator.userAgentData / sec-ch-ua 一起改，否则更假。）
+  await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' }).catch(() => {});
 
   console.log('导航到挑战页…');
   await cdp.send('Page.navigate', { url: ENTRY });

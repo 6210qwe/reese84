@@ -1261,17 +1261,70 @@ if (__jumpMs) {
 // Date.now 全程只被调 ~21 次，按调用序号卡点足够精确。
 var __dateCallIdx = 0;
 const __jumpAtDate = Number(__CFG.jumpAtDate) || 0;
+// ★★ --fake-start <ms>：只把**第 1 次** Date.now 的读数往回拨。
+//
+//   为什么是"第 1 次"而不是常数偏移：
+//     total 是两次 Date.now 的差，常数偏移会被同时加到两端、差值不变
+//     （--pre-jump 试过，538 → 538 完全没动）。
+//     而真实浏览器的 total 里包含了"下载+解析 837KB sensor"的 7 秒，
+//     这段在我们这里是 0（curl 下完再同步 eval）。
+//
+//   所以只能骗起点：第 1 次读数往前拨 7 秒，之后的读数正常。
+//   于是 total = 真实跨度 + 7000，而 phase1（询问块本身）不受影响。
+//
+//   风险：如果 st（unix 时间戳，服务端会和自己的钟对）正好取自第 1 次读数，
+//   会差 7 秒。所以先跑一遍看 st 有没有偏。
+var __fakeStartMs = Number(__CFG.fakeStart) || 0;
+var __warpMs = Number(__CFG.warpMs) || 0;
+var __warpRatio = Number(__CFG.warpRatio) || 0.09;
+var __warpAnchor = null;
+
 Date.now = function () {
   __dateCallIdx++;
+  if (__CFG.traceDate && __dateCallIdx <= 60) {
+    try {
+      var stk = String(new Error().stack).split('\n').slice(1, 4).join(' <- ')
+        .replace(/\s+/g, ' ').slice(0, 220);
+      (globalThis.__dateTrace || (globalThis.__dateTrace = [])).push(
+        [__dateCallIdx, __origDateNow.call(Date), stk]);
+    } catch (e) {}
+  }
+  if (__fakeStartMs && __dateCallIdx === 1) {
+    const real0 = __origDateNow.call(Date);
+    // 起点往回拨，同时把这一读锁定为压缩锚点
+    if (__warpMs > 0 && __warpAnchor === null) __warpAnchor = real0;
+    return real0 - __fakeStartMs;
+  }
   if (__jumpAtDate && __dateCallIdx === __jumpAtDate + 1 && !__jumpFired && __jumpMs) {
     __jumpFired = true;
     __clockJump += __jumpMs;
     try { __HOST__.log('时钟快进 +%sms（第 %s 次 Date.now 之后）', __jumpMs, __jumpAtDate); } catch (e) {}
   }
   const real = __origDateNow.call(Date);
-  const v = (__dateScale === 1)
-    ? real + __clockJump + (__probeTime ? 2 : 0)
-    : Math.round(__clockEpoch + (real - __clockEpoch) * __dateScale + __clockJump);
+
+  // ★★ --warp-ms <阈值> / --warp-ratio <系数>：分段线性时钟压缩
+  //
+  //   为什么需要：追踪确认 payload 的 phase1 就是 Date.now 第 2 次到第 3 次的间隔。
+  //   在我们这套纯 JS 环境里这一段是 487ms（真机 46ms、iv8 46ms），
+  //   因为我们每个 DOM/样式操作都比 Blink 慢一个数量级，而 reese84 恰好把这个数当指纹。
+  //
+  //   与其想办法把 4000 行补环境提速 12 倍（不现实），不如让它"看起来"只花了 46ms：
+  //     短间隔（< warpMs）原样通过 —— 不影响任何细微的时序判断
+  //     长停顿（>= warpMs）压缩 warpRatio 倍 —— 只压我们这种"性能劣势"造成的长块
+  //   压缩后 phase1 自动落到真机量级，而 total 再用 --fake-start 补回 7 秒。
+  //
+  //   这个函数是单调递增的，所以 Date.now 不会出现时间倒流。
+  let v;
+  if (__warpMs > 0) {
+    if (__warpAnchor === null) __warpAnchor = real;
+    const x = real - __warpAnchor;
+    const y = x <= __warpMs ? x : __warpMs + (x - __warpMs) * __warpRatio;
+    v = Math.round(__warpAnchor + y + __clockJump + (__probeTime ? 2 : 0));
+  } else {
+    v = (__dateScale === 1)
+      ? real + __clockJump + (__probeTime ? 2 : 0)
+      : Math.round(__clockEpoch + (real - __clockEpoch) * __dateScale + __clockJump);
+  }
   __dateStats.calls++;
   if (__dateStats.first === null) __dateStats.first = v;
   __dateStats.last = v;
