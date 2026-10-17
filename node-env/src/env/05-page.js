@@ -259,6 +259,90 @@ function __makeSubWindow(frameEl) {
   return proxy;
 }
 
+/**
+ * 派发一串拟真的鼠标移动轨迹。
+ *
+ * ★ 为什么必须做（这轮最关键的发现）：
+ *   在 sensor 上挂 addEventListener 追踪后看到它监听了这些：
+ *     document: mousemove / mousedown / mouseup / mouseover / mouseout
+ *               mouseenter / mouseleave / dblclick
+ *     document: touchstart / touchmove / touchend / touchcancel
+ *
+ *   而 payload 的 schema 里恰好有 events.mouse 和 events.touch 两个字段。
+ *   我们一次事件都没派发过 → 这两个字段是空数组。
+ *   真实用户不可能"一次鼠标都没动过"，所以空 mouse 轨迹本身就是强 bot 信号。
+ *
+ *   这也解释了 payload 体积差：iv8 27912、我们 21992，差 5920 字节。
+ *
+ * 轨迹怎么造：
+ *   随机直线跳跃是假的（真实鼠标是连续的、带加速度的）。
+ *   这里用二次贝塞尔生成一条从 (x0,y0) 到 (x1,y1) 的平滑曲线，
+ *   控制点带随机偏移，采样 12~25 个点，每点之间 8~40ms。
+ *   每个点派发 mousemove，首尾各派发一次 mouseover / mouseenter。
+ */
+function __dispatchMouseTrail(opts) {
+  const o = opts || {};
+  const W = __WIN.innerWidth || 1366;
+  const H = __WIN.innerHeight || 768;
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const x0 = rand(40, W * 0.4), y0 = rand(60, H * 0.5);
+  const x1 = rand(W * 0.5, W - 40), y1 = rand(80, H - 80);
+  // 控制点：中点 + 随机垂直偏移，让轨迹有弧度
+  const cx = (x0 + x1) / 2 + rand(-W * 0.15, W * 0.15);
+  const cy = (y0 + y1) / 2 + rand(-H * 0.2, H * 0.2);
+
+  const steps = Math.round(rand(12, 25));
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = 1 - t;
+    // 二次贝塞尔
+    const px = mt * mt * x0 + 2 * mt * t * cx + t * t * x1;
+    const py = mt * mt * y0 + 2 * mt * t * cy + t * t * y1;
+    pts.push([Math.round(px), Math.round(py)]);
+  }
+
+  const target = __document.body || __document.documentElement;
+  const mk = (type, x, y, extra) => {
+    const init = Object.assign({
+      bubbles: true, cancelable: true, composed: true,
+      clientX: x, clientY: y, screenX: x, screenY: y + 80,
+      view: __window, button: 0, buttons: 0,
+    }, extra || {});
+    try { return new MouseEvent(type, init); } catch (e) { return new Event(type, { bubbles: true }); }
+  };
+  const fire = (type, x, y, extra) => {
+    try { target.dispatchEvent(mk(type, x, y, extra)); } catch (e) {}
+  };
+
+  // 进入页面：mouseover / mouseenter
+  fire('mouseover', pts[0][0], pts[0][1]);
+  fire('mouseenter', pts[0][0], pts[0][1], { bubbles: false });
+
+  // 逐点移动。用 setTimeout 分开，让 sensor 能以"真实时间"记录时间戳
+  let i = 0;
+  const step = () => {
+    if (i >= pts.length) {
+      // 收尾：按下再抬起（一次点击），然后 mouseout
+      fire('mousedown', x1, y1, { buttons: 1 });
+      __HOST__.setTimeout(() => {
+        fire('mouseup', x1, y1, { buttons: 0 });
+        __HOST__.setTimeout(() => fire('mouseout', x1, y1), 60);
+      }, 110);
+      return;
+    }
+    const [x, y] = pts[i++];
+    fire('mousemove', x, y, { buttons: 0 });
+    __HOST__.setTimeout(step, o.fast ? 2 : Math.round(rand(8, 40)));
+  };
+
+  __HOST__.setTimeout(() => {
+    fire('mousemove', pts[0][0], pts[0][1]);
+    step();
+  }, 120);
+}
+
 const __pageApi = {
   load: __pageLoad,
   // ★★ 宿主在"页面开始执行"之前把时钟往前推。
@@ -279,6 +363,8 @@ const __pageApi = {
   //   之前的 --clock-jump 是在 canvas 取图时跳变（属于采集块内部），
   //   所以只会把 phase1 一起顶大 —— 位置错了。
   addClockJump(ms) { __clockJump += Number(ms) || 0; },
+  // 派发鼠标轨迹（sensor 会监听 mousemove 填 events.mouse）
+  mouseTrail(opts) { __dispatchMouseTrail(opts); },
   clockJump() { return __clockJump; },
   getDocument: () => __document,
   getWindow: () => __window,
@@ -305,6 +391,29 @@ const __pageApi = {
 // 让 phase1 塌到真机量级。像素值的真实性由 baseline.json 回放保证，不靠现场渲染。
 // （必须放在 03-window 之后：HTMLCanvasElement 在 03 才定义）
 // ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// --iv8-profile：把 canvas 输出改成 iv8 的形态
+//
+// 实测 iv8（唯一验证能通过的实现）的 canvas.toDataURL() 返回**空字符串**，
+// 它根本没做光栅化。也就是说服务端不校验 canvas 像素，我此前花在
+// Skia 真实渲染、PNG 编码长度对齐上的功夫全是无效投入。
+//
+// 这里直接对齐：toDataURL / toBlob 返回空，getImageData 返回全 0。
+// ══════════════════════════════════════════════════════════════════
+if (__CFG.iv8Profile) {
+  defMethod(HTMLCanvasElement.prototype, 'toDataURL', function () {
+    if (__diagJump) __diagJump();
+    return '';
+  });
+  defMethod(HTMLCanvasElement.prototype, 'toBlob', function (cb) {
+    if (typeof cb === 'function') __HOST__.setTimeout(function () { cb(null); }, 0);
+  });
+  defMethod(CanvasRenderingContext2D.prototype, 'getImageData', function (x, y, w, h) {
+    const n = Math.max(0, (w | 0) * (h | 0) * 4);
+    return { width: w | 0, height: h | 0, colorSpace: 'srgb', data: new Uint8ClampedArray(n) };
+  });
+}
+
 if (__CFG.fastCanvas) {
   const __BC = __CFG.baseline || {};
   const __fixedDataURL = (function () {

@@ -101,6 +101,23 @@ function __installCtx2D(proto) {
   }
   defMethod(proto, 'measureText', function (text) {
     try { __HOST__._bump('canvas.measureText'); } catch (e) {}
+    // ★ iv8 profile：完全复刻 iv8 的度量公式 —— width = 字符数 × 8，
+    //   与字号、字体族都无关（实测 iv8 的 10px/72px、sans/mono/serif 结果全一样）。
+    //   这个"所有字体宽度相同"的特性会让候选字体探测全部判定为未安装，
+    //   于是上报的已装字体清单是空的 —— 这正是 iv8 通过时的形态。
+    //   我原来用真实 Skia 渲染，探测出一大批真实字体，反而是服务端没见过的组合。
+    if (__CFG.iv8Profile) {
+      const len = String(text).length;
+      const w = len * 8;
+      return {
+        width: w,
+        actualBoundingBoxLeft: 0, actualBoundingBoxRight: w,
+        actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0,
+        fontBoundingBoxAscent: 0, fontBoundingBoxDescent: 0,
+        emHeightAscent: 0, emHeightDescent: 0,
+        hangingBaseline: 0, alphabeticBaseline: 0, ideographicBaseline: 0,
+      };
+    }
     // 记录被测量的 font 声明：字体探测的调用数差一倍时，靠这张表能一眼看出
     // 是"候选集少了"还是"循环轮数少了"
     try { __HOST__._fontUse(this.font); } catch (e) {}
@@ -259,6 +276,15 @@ function __installGL(proto, isGL2) {
   });
   defMethod(proto, 'getExtension', function (name) {
     try { __HOST__._bump('gl.getExtension'); } catch (e) {}
+    if (__CFG.iv8Profile) {
+      // iv8 的扩展列表是空的，但 debug_renderer_info 仍然可用
+      // （否则拿不到 unmaskedRenderer，而 iv8 明确给了 NVIDIA 的值）
+      const nm = String(name);
+      if (nm === 'WEBGL_debug_renderer_info') {
+        return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
+      }
+      return null;
+    }
     const n = String(name);
     if (n === 'WEBGL_debug_renderer_info') return { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 };
     if (n === 'WEBGL_lose_context') return { loseContext() {}, restoreContext() {} };
@@ -269,6 +295,9 @@ function __installGL(proto, isGL2) {
     return null;
   });
   defMethod(proto, 'getSupportedExtensions', function () {
+    // ★ iv8 profile：iv8 的 getSupportedExtensions() 返回**空数组**（实测）。
+    //   我原来给了一份完整的扩展名单，反而和 iv8 不同。
+    if (__CFG.iv8Profile) return [];
     // isGL2 由 __installGL 的第二个参数决定，闭包捕获
     return GL_EXTS.filter((n) => (isGL2 ? true : !GL2_ONLY.has(n))).slice();
   });

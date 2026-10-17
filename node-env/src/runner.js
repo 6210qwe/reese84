@@ -104,6 +104,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     jumpAtDate: Number(opt('--jump-at-date', '0')) || 0,
     timerScale: Number(opt('--timer-scale', '1')) || 1,
     fakeStart: Number(opt('--fake-start', '0')) || 0,
+    iv8Profile: flag('--iv8-profile'),
     traceDate: flag('--trace-date'),
     warpMs: Number(opt('--warp-ms', '0')) || 0,
     warpRatio: Number(opt('--warp-ratio', '0.09')) || 0.09,
@@ -216,6 +217,13 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     log('[3.5] Math.random 已固定，seed=%s', fixRandom);
   }
 
+  // ── --collect-trace：注入 API 调用轨迹探针 ──
+  // 两端（iv8 / 补环境）跑同一份探针，记录 sensor 调用了哪些 API、返回了什么。
+  // 这是唯一不碰 JSVMP 就能定位"哪个返回值不同"的办法。
+  const TRACE_SRC = flag('--collect-trace')
+    ? fs.readFileSync(path.join(__dirname, '..', 'tools', 'collect_trace.js'), 'utf8')
+    : null;
+
   const src = buildEnvSource();
   let env;
   try {
@@ -223,6 +231,10 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   } catch (e) {
     log('!! 补环境装配失败: %s', e && e.stack);
     process.exit(4);
+  }
+  if (TRACE_SRC) {
+    vm.runInContext(TRACE_SRC, ctx, { filename: 'collect_trace.js' });
+    log('[4.0] 轨迹探针已注入');
   }
   log('[4] 补环境装配完成 (%sms)', Date.now() - t0);
 
@@ -240,6 +252,13 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   // 而把它变成字符串只能靠 JSON.stringify（浏览器里没有别的通用途径）。
   // 在 vm 域里挂一层，凡是长度 > 800 且不像 POST 外层的 JSON，就落盘。
   // 这是唯一能在不逆向 JSVMP 的前提下"看见答案"的办法。
+  if (TRACE_SRC) {
+    try {
+      const raw = vm.runInContext('globalThis.__dumpTrace()', ctx);
+      fs.writeFileSync(path.join(__dirname, '..', '_trace_node.json'), raw, 'utf8');
+      log('    [trace] 补环境轨迹 %s 条 -> _trace_node.json', JSON.parse(raw).length);
+    } catch (e) { log('    [trace] 导出失败: %s', e && e.message); }
+  }
   if (flag('--trace-date')) {
     try {
       const raw = vm.runInContext('JSON.stringify(globalThis.__dateTrace || [])', ctx);
@@ -272,6 +291,14 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     env.load(ch.text, ENTRY);
   } catch (e) {
     log('!! 页面执行异常: %s', e && e.stack);
+  }
+  // ★ 页面脚本跑完，sensor 的 addEventListener 已注册好，此时派发鼠标轨迹。
+  //   sensor 监听 mousemove 填 events.mouse —— 空数组是强 bot 信号。
+  if (flag('--mouse-trail')) {
+    try {
+      env.page.mouseTrail({ fast: flag('--mouse-fast') });
+      log('[4.9] 已派发鼠标轨迹');
+    } catch (e) { log('!! 鼠标轨迹派发失败: %s', e && e.message); }
   }
   log('[5] 页面执行结束 (%sms) 请求数=%s', Date.now() - t0, bridge._state.requests.length);
 
@@ -354,6 +381,13 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     process.exit(5);
   }
 
+  if (TRACE_SRC) {
+    try {
+      const raw = vm.runInContext('globalThis.__dumpTrace()', ctx);
+      fs.writeFileSync(path.join(__dirname, '..', '_trace_node.json'), raw, 'utf8');
+      log('    [trace] 补环境轨迹 %s 条 -> _trace_node.json', JSON.parse(raw).length);
+    } catch (e) { log('    [trace] 导出失败: %s', e && e.message); }
+  }
   if (flag('--trace-date')) {
     try {
       const raw = vm.runInContext('JSON.stringify(globalThis.__dateTrace || [])', ctx);

@@ -195,6 +195,26 @@ function createBridge(cfg) {
   //   这类"写了但没接线"的 bug 不会报错，只会让指纹悄悄回到猜的值。
   if (!cfg.baseline) cfg.baseline = BASELINE;
 
+  // ★ iv8 环境基线（验证过能过的一套值，tools/dump_iv8_env.py 生成）
+  //   为什么要照抄 iv8：它是唯一确定能通过校验的实现，
+  //   它给服务端看的所有环境值都是"被接受过的值"。
+  //   我此前一直在从真实 Edge 采样，但 Edge 的值本身没被验证过能过。
+  let IV8_BASE = null;
+  if (cfg.iv8Profile) {
+    try {
+      IV8_BASE = JSON.parse(fs.readFileSync(path.join(__dirname, 'env', 'iv8_baseline.json'), 'utf8'));
+      // 用 iv8 的值覆盖 baseline，后续所有回放逻辑自动生效
+      cfg.baseline = Object.assign({}, cfg.baseline || {}, IV8_BASE);
+      cfg.baseline.navigator = Object.assign({}, (BASELINE || {}).navigator || {}, IV8_BASE.navigator);
+      cfg.baseline.screen = IV8_BASE.screen;
+      cfg.baseline.window = IV8_BASE.window;
+      cfg.baseline.webgl = IV8_BASE.webgl;
+      cfg.baseline.userAgentData = IV8_BASE.userAgentData;
+    } catch (e) {
+      console.error('!! 读取 iv8_baseline.json 失败:', e.message);
+    }
+  }
+
   // 真实浏览器 window 自有属性表（tools/dump_window_names.js 导出）
   let WINDOW_NAMES = [];
   try {

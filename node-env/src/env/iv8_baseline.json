@@ -1,0 +1,196 @@
+{
+  "_note": "来自 iv8（验证通过）的环境值。tools/dump_iv8_env.py 生成。",
+  "navigator": {
+    "appCodeName": "Mozilla",
+    "appName": "Netscape",
+    "appVersion": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "cookieEnabled": true,
+    "doNotTrack": null,
+    "hardwareConcurrency": 8,
+    "deviceMemory": 8,
+    "language": "zh-CN",
+    "languages": [
+      "en-US",
+      "en"
+    ],
+    "maxTouchPoints": 0,
+    "onLine": true,
+    "platform": "Win32",
+    "product": "Gecko",
+    "productSub": "20030107",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "vendor": "Google Inc.",
+    "vendorSub": "",
+    "webdriver": false,
+    "pdfViewerEnabled": true
+  },
+  "userAgentData": {
+    "brands": [
+      {
+        "brand": "Chromium",
+        "version": "124"
+      },
+      {
+        "brand": "Google Chrome",
+        "version": "124"
+      },
+      {
+        "brand": "Not-A.Brand",
+        "version": "99"
+      }
+    ],
+    "mobile": false,
+    "platform": "Windows"
+  },
+  "plugins": [
+    {
+      "name": "PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimes": [
+        "application/pdf",
+        "text/pdf"
+      ]
+    },
+    {
+      "name": "Chrome PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimes": [
+        "application/pdf",
+        "text/pdf"
+      ]
+    },
+    {
+      "name": "Chromium PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimes": [
+        "application/pdf",
+        "text/pdf"
+      ]
+    },
+    {
+      "name": "Microsoft Edge PDF Viewer",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimes": [
+        "application/pdf",
+        "text/pdf"
+      ]
+    },
+    {
+      "name": "WebKit built-in PDF",
+      "filename": "internal-pdf-viewer",
+      "description": "Portable Document Format",
+      "mimes": [
+        "application/pdf",
+        "text/pdf"
+      ]
+    }
+  ],
+  "mimeTypes": [
+    {
+      "type": "application/pdf",
+      "suffixes": "pdf",
+      "description": "Portable Document Format"
+    },
+    {
+      "type": "text/pdf",
+      "suffixes": "pdf",
+      "description": "Portable Document Format"
+    }
+  ],
+  "screen": {
+    "width": 1920,
+    "height": 1080,
+    "availWidth": 1920,
+    "availHeight": 1040,
+    "colorDepth": 24,
+    "pixelDepth": 24,
+    "availLeft": 0,
+    "availTop": 0
+  },
+  "window": {
+    "innerWidth": 1920,
+    "innerHeight": 969,
+    "outerWidth": 1920,
+    "outerHeight": 1040,
+    "devicePixelRatio": 1,
+    "screenX": 0,
+    "screenY": 0,
+    "screenLeft": 0,
+    "screenTop": 0
+  },
+  "intl": {
+    "timeZone": "Asia/Shanghai",
+    "locale": "zh-CN",
+    "tzOffset": -480
+  },
+  "webgl": {
+    "vendor": "WebKit",
+    "renderer": "WebKit WebGL",
+    "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
+    "shading": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+    "unmaskedVendor": "Google Inc. (NVIDIA)",
+    "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 (0x00001F82) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "supportedExtensions": [],
+    "params": {
+      "3379": 16384,
+      "3386": {
+        "0": 32767,
+        "1": 32767
+      },
+      "34024": 16384,
+      "34047": 16,
+      "34076": 16384,
+      "34921": 16,
+      "35660": 16,
+      "35661": 32,
+      "36347": 4095,
+      "36348": 30
+    }
+  },
+  "canvas": {
+    "lenA": 0,
+    "hashA": "0",
+    "lenB": 0,
+    "hashB": "0",
+    "prefixA": ""
+  },
+  "fonts": {
+    "installed": [],
+    "count": 0,
+    "baseWidths": {
+      "monospace": 104,
+      "sans-serif": 104,
+      "serif": 104
+    }
+  },
+  "features": {
+    "TouchEvent": "function",
+    "Touch": "function",
+    "TouchList": "function",
+    "PointerEvent": "function",
+    "MediaRecorder": "function",
+    "SharedWorker": "function",
+    "reportError": "function",
+    "AudioContext": "function",
+    "OfflineAudioContext": "function",
+    "webkitOfflineAudioContext": "undefined",
+    "indexedDB": "object",
+    "openDatabase": "undefined",
+    "WebGL2RenderingContext": "function",
+    "Path2D": "function",
+    "Notification": "function",
+    "BroadcastChannel": "function",
+    "structuredClone": "function",
+    "canPlayType_mp4": "maybe",
+    "canPlayType_webm": "maybe",
+    "hasFocus": true
+  },
+  "shapes": {
+    "__keysLen": 234,
+    "__ownNamesLen": 1141
+  }
+}

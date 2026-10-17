@@ -266,6 +266,27 @@
   wrapFn(window, 'matchMedia', 'matchMedia');
 
   // ══════════════════════════════════════════════════════════
+  // 7.5 addEventListener：看 sensor 监听了哪些事件
+  //      schema 里有 events.mouse / events.touch 两个字段，
+  //      如果 sensor 监听了 mousemove 而我们从没派发过，那块数据就是空的。
+  //      payload 体积差（iv8 27912 vs 我们 21992）很可能就是它。
+  // ══════════════════════════════════════════════════════════
+  var _addEL = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, fn, opt) {
+    var r = _addEL.call(this, type, fn, opt);
+    try {
+      var who = '?';
+      if (this === window) who = 'window';
+      else if (this === document) who = 'document';
+      else if (this && this.tagName) who = this.tagName;
+      else if (this && this.constructor) who = this.constructor.name;
+      rec('addEventListener(' + who + ',"' + String(type) + '")', [], undefined);
+    } catch (e) {}
+    return r;
+  };
+  try { nativeLike && nativeLike(EventTarget.prototype.addEventListener, 'addEventListener'); } catch (e) {}
+
+  // ══════════════════════════════════════════════════════════
   // 8. 反射类（形状检测）
   // ══════════════════════════════════════════════════════════
   ['getOwnPropertyNames', 'getPrototypeOf', 'getOwnPropertyDescriptor', 'keys'].forEach(function (fn) {

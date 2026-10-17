@@ -868,6 +868,11 @@ class HTMLMediaElement extends HTMLElement {
     return nativeLike(function (t) {
       const v = String(t);
       if (!v) return '';
+      // ★ iv8 profile：iv8 实测 'video/mp4; codecs="avc1..."' → 'maybe'（不是 probably）。
+      //   这是空壳实现的典型特征（没有真实解码器），但它通过了校验。
+      if (__CFG.iv8Profile) {
+        return /^(audio|video)\//.test(v) ? 'maybe' : '';
+      }
       // Chrome 从 2019 起移除了 Ogg Theora，'video/ogg; codecs="theora"' 返回空串。
       // 我们之前一律回 'probably'，和 UA 里的 Chrome 141 矛盾。
       if (/ogg/i.test(v)) return '';
@@ -1767,6 +1772,14 @@ function __installWindow() {
   defValue(w, 'SharedWorker', SharedWorker, true);
   defValue(w, 'HTMLDocument', HTMLDocument, true);
   defValue(w, 'reportError', reportError, true);
+
+  if (__CFG.iv8Profile) {
+    // iv8 实测：webkitOfflineAudioContext / openDatabase 都是 undefined，
+    // 而我的实现里都给了值 —— 这是"多给了"造成的差异，和"少给了"一样致命。
+    try { delete w.webkitOfflineAudioContext; } catch (e) {}
+    try { delete w.webkitAudioContext; } catch (e) {}
+    try { delete w.openDatabase; } catch (e) {}
+  }
 
   const __STANDARD_CTORS = [
     'Window', 'Navigator', 'Document', 'HTMLDocument', 'Node', 'Element', 'HTMLElement',
