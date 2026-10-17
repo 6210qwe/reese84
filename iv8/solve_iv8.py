@@ -320,6 +320,28 @@ CAPTURE_JS = r"""
     payload: window.__body_full || null,
     docCookie: (function(){ try { return document.cookie || ''; } catch(e){ return 'ERR'; } })(),
     dumped: {},
+    traceProbe: {
+      installed: (function(){ try { return String(window.__TRACE_INSTALLED__); } catch(e){ return 'ERR'; } })(),
+      typeofTrace: (function(){ try { return typeof window.__TRACE; } catch(e){ return 'ERR'; } })(),
+      traceLen: (function(){ try { return window.__TRACE ? window.__TRACE.length : -1; } catch(e){ return 'ERR'; } })(),
+      typeofDump: (function(){ try { return typeof window.__dumpTrace; } catch(e){ return 'ERR'; } })(),
+      typeofTraceOnIv8: (function(){ try { return typeof __iv8__.__TRACE; } catch(e){ return 'ERR'; } })(),
+    },
+    trace: (function(){
+      try {
+        if (typeof __iv8__ !== 'undefined' && __iv8__ && __iv8__.data && __iv8__.data.__trace
+            && __iv8__.data.__trace.length) return __iv8__.data.__trace;
+      } catch (e) {}
+      try {
+        // 多种取法都试：iv8 的 window / globalThis 可能不是同一个对象，
+        // 而且探针是 prepend 到 VM 源码前跑的，挂在哪个 global 上要看实现。
+        var cands = [window.__TRACE, globalThis.__TRACE, self.__TRACE];
+        for (var i = 0; i < cands.length; i++) if (cands[i] && cands[i].length) return cands[i];
+        // 兜底：探针自己也挂了 dump
+        if (typeof window.__dumpTrace === 'function') return JSON.parse(window.__dumpTrace());
+        return [];
+      } catch (e) { return ['ERR:' + (e && e.message)]; }
+    })(),
   };
   var d = window.__dumpR84 && window.__dumpR84();
   if (d) out.dumped = d;
@@ -363,7 +385,19 @@ def run_iv8(target, html, vm_url, vm_code):
     }
 
     # 关键：补丁必须 prepend 到 VM 源码（page.load 会重置 window）
-    resources = {vm_url: (hooks + "\n;\n" + vm_code)}
+    # 固定随机数（可选）：让 cr 与编码可复现，便于和另一个实现做逐字节对比
+    # （注意：不要在函数内 import os —— 会把 os 变成本地变量，
+    #   前面 run_iv8 里的 os.path.isfile 就会 UnboundLocalError。踩过一次。）
+    _fr = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fix_random_hook.js')
+    _fr_code = ''
+    if os.environ.get('IV8_FIX_RANDOM') and os.path.exists(_fr):
+        _fr_code = open(_fr, encoding='utf-8').read() + '\n;\n'
+    # API 轨迹探针：与 Node 补环境用同一份，便于逐条 diff
+    _tr = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'collect_trace.js')
+    if os.environ.get('IV8_COLLECT_TRACE') and os.path.exists(_tr):
+        _fr_code = _fr_code + open(_tr, encoding='utf-8').read() + "\n;\n"
+
+    resources = {vm_url: (_fr_code + hooks + "\n;\n" + vm_code)}
 
     # 挑战页里的 _Incapsula_Resource iframe 也注入
     mif = re.search(r'src=["\']([^"\']*_Incapsula_Resource[^"\']*)["\']', html, re.I)
@@ -438,6 +472,17 @@ def main():
     print("  document.cookie: %s" % (ck[:120] or "(空)"))
     if info.get("dumped"):
         print("  内部状态: %s" % json.dumps(info["dumped"], ensure_ascii=False)[:300])
+    # 轨迹探针导出：必须独立成块。
+    # 之前塞在 if info.get("dumped") 里，dumped 为空时整块不执行 → 轨迹永远不落盘。
+    if info.get("traceProbe"):
+        print("  探针状态: %s" % json.dumps(info["traceProbe"], ensure_ascii=False))
+    _trace = info.get("trace") or []
+    if _trace:
+        _tp = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_trace_iv8.json')
+        with open(_tp, 'w', encoding='utf-8') as _f:
+            json.dump(_trace, _f, ensure_ascii=False)
+        print("  ✅ 轨迹探针 %d 条 -> %s" % (len(_trace), _tp))
+
     for k in ("layout", "hooks", "net", "err"):
         v = info.get(k) or []
         if v:
