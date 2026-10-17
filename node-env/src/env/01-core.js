@@ -43,6 +43,100 @@ function nativeLike(fn, name) {
   return fn;
 }
 
+/**
+ * ★★ 让 class 构造器对 Function.prototype.toString 伪装成原生函数。
+ *
+ * 为什么必须做（实测抓到的泄漏）：
+ *   class Navigator extends EventTarget { ... }  →  toString() 直接返回整段源码
+ *   浏览器里必须是  "function Navigator() { [native code] }"
+ *
+ * scrapebadger 的 2026 实测报告点名了这件事：
+ *   "The 12 Function.prototype.toString calls matter most here.
+ *    Two of them targeted Window and eval, which is what a native-code integrity check looks like."
+ *
+ * 也就是说这是 reese84 的**主动检测项**，不是"顺手看看"。
+ * 我们之前所有 class 都漏了（Navigator / Document / Element / XMLHttpRequest / ... 二十多个）。
+ */
+/**
+ * ★★ 原型链自检加固（52pojie 某航司实测清单，2025-09）
+ *
+ * 该文列出的 22 个采集函数里，函数二十专门查：
+ *   Function.prototype.toString / call / apply / bind 的 toString
+ * 函数二十一查：
+ *   window.Object.getPrototypeOf() 的属性
+ * 另外还有一条极易漏的：
+ *   window.Object.getOwnPropertyNames(某个补的函数) 必须只返回 ['length', 'name']
+ *
+ * 我们自己补环境时，函数上会挂一堆东西（__nativeFns 是 WeakSet 不占自有属性，
+ * 但 Function.prototype.toString 本身被替换后，它的 toString 又变成普通函数源码）。
+ * 这几点必须逐项对齐。
+ */
+function __hardenPrototypeChain() {
+  const FP = Function.prototype;
+
+  // 1) 让 Function.prototype.toString / call / apply / bind 本身也是 native
+  for (const m of ['toString', 'call', 'apply', 'bind']) {
+    const d = Object.getOwnPropertyDescriptor(FP, m);
+    if (d && typeof d.value === 'function') {
+      if (!__nativeFns.has(d.value)) { __nativeFns.add(d.value); __fnNames.set(d.value, m); }
+    }
+  }
+
+  // 2) ★ Object.getOwnPropertyNames(任意原生函数) 只能返回 ['length', 'name']
+  //    浏览器里 function X(){} 的自有属性就是这两个（arguments/caller 是不可枚举的访问器，
+  //    但 getOwnPropertyNames 也会包含它们 —— 实测 Chrome 返回 ['length','name'] 是因为
+  //    严格模式下 arguments/caller 被移除）。这里统一对齐成 ['length','name']。
+  const __origGOPN = Object.getOwnPropertyNames;
+  const __nativeGOPN = function getOwnPropertyNames(obj) {
+    const r = __origGOPN(obj);
+    if (typeof obj === 'function') {
+      // 只保留浏览器里真实存在的两个自有属性
+      return r.filter((k) => k === 'length' || k === 'name' || k === 'prototype');
+    }
+    return r;
+  };
+  __nativeFns.add(__nativeGOPN); __fnNames.set(__nativeGOPN, 'getOwnPropertyNames');
+  Object.defineProperty(Object, 'getOwnPropertyNames', {
+    value: __nativeGOPN, writable: true, configurable: true, enumerable: false,
+  });
+
+  // 3) 原型链形状：Object.getPrototypeOf(function(){}) === Function.prototype
+  //    （我们的函数都是普通函数，天然成立；这里只保证不被上面的替换破坏）
+
+  // 4) Object.prototype.toString 也要 native（常用于 brand 检测）
+  const obs = Object.prototype.toString;
+  if (!__nativeFns.has(obs)) { __nativeFns.add(obs); __fnNames.set(obs, 'toString'); }
+}
+
+function nativeClass(cls, name) {
+  if (typeof cls !== 'function') return cls;
+  const nm = name || cls.name || '';
+  __nativeFns.add(cls);
+  __fnNames.set(cls, nm);
+  // 顺带把原型上的方法也标 native（方法都是 defMethod(defMethod 已处理)，
+  // 但 class 内直接写的 addEventListener 之类不会走 defMethod）
+  try {
+    for (const k of Object.getOwnPropertyNames(cls.prototype)) {
+      if (k === 'constructor') continue;
+      const d = Object.getOwnPropertyDescriptor(cls.prototype, k);
+      if (!d) continue;
+      if (typeof d.value === 'function' && !__nativeFns.has(d.value)) {
+        __nativeFns.add(d.value);
+        __fnNames.set(d.value, k);
+      }
+      if (typeof d.get === 'function' && !__nativeFns.has(d.get)) {
+        __nativeFns.add(d.get);
+        __fnNames.set(d.get, 'get ' + k);
+      }
+      if (typeof d.set === 'function' && !__nativeFns.has(d.set)) {
+        __nativeFns.add(d.set);
+        __fnNames.set(d.set, 'set ' + k);
+      }
+    }
+  } catch (e) {}
+  return cls;
+}
+
 // 定义 getter（浏览器语义：configurable + enumerable on prototype）
 function defGetter(obj, prop, getter, enumerable) {
   Object.defineProperty(obj, prop, {

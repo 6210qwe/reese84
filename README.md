@@ -1,10 +1,28 @@
 # reese84 —— Imperva / Incapsula 反爬令牌的两种解法（实测记录）
 
+> 📦 **本仓库的最终形态是一套「风控参数通杀流水线」**，reese84 只是它跑通的第一个案例。
+> 已固化为 skill：`~/.workbuddy/skills/js-antibot-pipeline/`（给一个 URL → 自动识别厂商 → 定位接口 → 选路线 → 门禁验证）
+>
 > 靶站：`https://book.airgreenland.com/`（Air Greenland 订票域，Imperva 边缘，reese84 sensor，dynamic 变体，未开 PoW）
 > 实测环境：Windows 11 / Node 22 / Python 3.13 / Edge 154
 > 结论先行：**iv8 路线 100% 通过；纯 Node 手写补环境能拿到服务端签发的 token，但回放不被信任**
 
 ---
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| `docs/01` | 全网资料检索结论（逐条标注"对本站成不成立"） |
+| `docs/02` | `performance` 时序之谜：11 个被排除的假设 + **时间源已定位到 `Date.now`** |
+| `docs/03` | 12 条静默失败坑逐条复现与修复（**8 条跨站通用**） |
+| `docs/04` | 方法论总结（8 条） |
+| `docs/05` | **reese84 版本演进时间线（2022→2026）** —— 哪些变了、哪些没变 |
+| `docs/06` | **GitHub 知名项目实测评估**（7 个，逐个跑过） |
+| `docs/07` | 本地资料库 `D://BaiduNetdiskDownload//JS补环境专属资料` 评估 |
+| `docs/08` | **`toString`/原型链泄漏修复** —— 本项目抓到的最大假环境特征 |
+| `docs/09` | **通杀框架**：三层结构 + 跨站验证 + 固定动作 |
+| `docs/10` | 通杀 skill 原文 |
 
 ## 一、两条路线的真实结果
 

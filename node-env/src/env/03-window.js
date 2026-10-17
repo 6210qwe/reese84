@@ -1525,6 +1525,54 @@ function __installWindow() {
     'popstate', 'visibilitychange', 'devicemotion', 'orientationchange', 'storage',
     'pointerdown', 'click', 'keydown', 'DOMContentLoaded', 'readystatechange']);
 
+  // ══════════════════════════════════════════════════════════════
+  // ★ 把所有构造器/prototype 方法伪装成 native
+  //   不做的后果（实测）：class Navigator extends EventTarget {...} 会整段源码泄漏，
+  //   而浏览器里必须是 "function Navigator() { [native code] }"。
+  //   reese84 会显式检查这个（重点检查 Window 与 eval）。
+  // ══════════════════════════════════════════════════════════════
+  const __STANDARD_CTORS = [
+    'Window', 'Navigator', 'Document', 'HTMLDocument', 'Node', 'Element', 'HTMLElement',
+    'EventTarget', 'Event', 'CustomEvent', 'UIEvent', 'MouseEvent', 'KeyboardEvent',
+    'MessageEvent', 'ErrorEvent', 'ProgressEvent', 'DOMException',
+    'Text', 'Comment', 'CharacterData', 'DocumentFragment',
+    'HTMLCanvasElement', 'CanvasRenderingContext2D', 'ImageData', 'TextMetrics',
+    'WebGLRenderingContext', 'WebGL2RenderingContext',
+    'HTMLIFrameElement', 'HTMLScriptElement', 'HTMLImageElement', 'HTMLAnchorElement',
+    'HTMLInputElement', 'HTMLDivElement', 'HTMLSpanElement', 'HTMLBodyElement',
+    'HTMLHeadElement', 'HTMLHtmlElement', 'HTMLStyleElement', 'HTMLLinkElement',
+    'HTMLMetaElement', 'HTMLTitleElement', 'HTMLMediaElement', 'HTMLAudioElement',
+    'HTMLVideoElement', 'HTMLUnknownElement',
+    'AudioContext', 'OfflineAudioContext', 'AudioNode', 'AudioParam',
+    'Performance', 'Screen', 'Location', 'History', 'Storage',
+    'Plugin', 'PluginArray', 'MimeType', 'MimeTypeArray',
+    'CSSStyleDeclaration', 'MediaQueryList',
+    'MutationObserver', 'IntersectionObserver', 'ResizeObserver', 'PerformanceObserver',
+    'Notification', 'Blob', 'URL', 'TextEncoder', 'TextDecoder',
+    'Headers', 'Request', 'Response', 'XMLHttpRequest',
+    'MessageChannel', 'BroadcastChannel', 'AbortController', 'AbortSignal',
+    'FormData', 'WebSocket', 'EventSource', 'FileReader', 'OffscreenCanvas',
+    'DOMRect', 'DOMRectReadOnly', 'DOMTokenList', 'HTMLCollection', 'NodeList',
+    'Image', 'Audio', 'Option', 'Path2D', 'XMLSerializer', 'DOMParser',
+  ];
+  for (const n of __STANDARD_CTORS) {
+    if (typeof w[n] === 'function') nativeClass(w[n], n);
+  }
+  // 关键两个：window.Window 与 window.constructor 都必须是 Window
+  nativeClass(Window, 'Window');
+  try { Object.defineProperty(w, 'Window', { value: Window, configurable: true, writable: true, enumerable: false }); } catch (e) {}
+  try {
+    Object.defineProperty(w, 'constructor', {
+      value: Window, configurable: true, writable: true, enumerable: false,
+    });
+  } catch (e) {}
+  nativeClass(Navigator, 'Navigator');
+  nativeClass(Document, 'Document');
+  nativeClass(EventTarget, 'EventTarget');
+
+  // 原型链自检加固（Function.prototype.toString/call/apply/bind + getOwnPropertyNames）
+  __hardenPrototypeChain();
+
   // 显式的宿主可见性诊断钩子（默认不可枚举，避免被 Object.keys 看到）
   Object.defineProperty(w, '__diag', { value: __diagApi, configurable: true, enumerable: false });
 }
