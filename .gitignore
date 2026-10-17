@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+__pycache__/
+*.pyc
+
+# 运行时产物（含 token / cookie，绝不入库）
+_*.json
+_*.txt
+_*.log
+_*.html
+baseline.json
+sensor_cache*
+cookies*
+result-*.json
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
