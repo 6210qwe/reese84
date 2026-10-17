@@ -200,6 +200,10 @@ function createBridge(cfg) {
   const bump = (k) => { state.counters[k] = (state.counters[k] || 0) + 1; };
   const notes = new Set();
   const note = (k) => { if (notes.size < 5000) notes.add(k); };
+  const timerLog = [];
+  const timerRec = (kind, id, delay) => {
+    if (timerLog.length < 2000) timerLog.push({ kind, id, delay, at: Date.now() - timeOrigin });
+  };
   const perfLog = [];
   const perf = (kind, name, dur) => {
     if (perfLog.length < 4000) perfLog.push({ kind, name, dur: Math.round(dur * 1000) / 1000 });
@@ -208,7 +212,10 @@ function createBridge(cfg) {
   let cvSeq = 0;
   let nowCalls = 0;
   const nowSpinUs = Number(cfg.nowSpinUs) || 0;
-  const clockScale = Number(cfg.clockScale) || 1;
+  // 两个时间源独立缩放：实测 payload 的 phase1 与 total 用的是不同时间源，
+  // 必须分开控制才能各自对上真机量级（iv8: phase1=46 / total=6570）。
+  const perfScale = Number(cfg.perfScale || cfg.clockScale) || 1;
+  const dateScale = Number(cfg.dateScale || cfg.clockScale) || 1;
   const nowTrace = [];
   let nowFirst = null;
   let nowLast = null;
@@ -251,7 +258,7 @@ function createBridge(cfg) {
       //   做法：让脚本读到"真实经过了那么久"（放大后的时间），实际墙钟不变
       //   —— 这就是 CSDN 那篇讲的"内建虚拟时钟，亚秒跑完数秒交互但不露时序破绽"。
       //   注意：不能靠 spin 拉长，因为首尾同步后移，跨度不变（已实测无效）。
-      return Math.round(t * clockScale * 10) / 10;
+      return Math.round(t * perfScale * 10) / 10;
     },
     // 供 vm 内部做时钟缩放用：拿真实毫秒（未缩放）
     nowRaw() {
@@ -403,6 +410,8 @@ function createBridge(cfg) {
     _note: note,
     _notes: () => Array.from(notes),
     _perf: perf,
+    _timerRec: timerRec,
+    _timerLog: () => timerLog,
     _perfLog: () => perfLog,
   };
 

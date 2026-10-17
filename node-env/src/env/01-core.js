@@ -803,10 +803,10 @@ class Element extends Node {
     walk(this);
     return out;
   }
-  getBoundingClientRect() { return __rect(this); }
+  getBoundingClientRect() { __slowCost('rect'); return __rect(this); }
   getClientRects() { return [__rect(this)]; }
-  get clientWidth() { return __box(this).cw; }
-  get clientHeight() { return __box(this).ch; }
+  get clientWidth() { __slowCost('client'); return __box(this).cw; }
+  get clientHeight() { __slowCost('client'); return __box(this).ch; }
   get clientTop() { return 0; }
   get clientLeft() { return 0; }
   get scrollWidth() { return __box(this).cw; }
@@ -830,8 +830,8 @@ class Element extends Node {
 Object.defineProperty(Element.prototype, Symbol.toStringTag, { value: 'Element', configurable: true });
 
 class HTMLElement extends Element {
-  get offsetWidth() { const b = __box(this); return b.ow; }
-  get offsetHeight() { const b = __box(this); return b.oh; }
+  get offsetWidth() { __slowCost('offset'); const b = __box(this); return b.ow; }
+  get offsetHeight() { __slowCost('offset'); const b = __box(this); return b.oh; }
   get offsetLeft() { return __offset(this).left; }
   get offsetTop() { return __offset(this).top; }
   get offsetParent() {
@@ -873,6 +873,18 @@ function __box(el) {
   return r;
 }
 let __layoutStamp = 1;
+
+// ── 可选：模拟 Blink binding 层的访问成本 ──
+// 纯 JS 对象属性访问约 0.05μs，而 Chrome 的 offsetWidth 要走 layout 查询、
+// getComputedStyle 要走样式解析，单次 5~50μs。reese84 会把整段采集耗时当指纹上传，
+// 快一个数量级本身就是破绽。
+// 用 --slow-dom <μs> 给这些高频 getter 加真实自旋，让采集墙钟自然拉到真机量级。
+function __slowCost(name) {
+  const us = __CFG.slowDom;
+  if (!us) return;
+  const per = (typeof us === 'object' ? (us[name] || 0) : us);
+  if (per > 0) __HOST__.busy(per);
+}
 
 function __computeBox(el) {
   const zero = { cw: 0, ch: 0, ow: 0, oh: 0 };

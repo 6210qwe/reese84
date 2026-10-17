@@ -90,10 +90,18 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     traceCtx: flag('--trace-ctx'),
     traceTiming: flag('--trace-timing'),
     navOffsetMs: Number(opt('--nav-offset', '0')) || 0,
+    probeTime: flag('--probe-time'),
+    slowDom: Number(opt('--slow-dom', '0')) || 0,
     windowProto: flag('--window-proto'),
     measureCostUs: Number(opt('--measure-cost', '0')) || 0,
     nowSpinUs: Number(opt('--now-spin', '0')) || 0,
     clockScale: Number(opt('--clock-scale', '1')) || 1,
+    perfScale: Number(opt('--perf-scale', '1')) || 1,
+    dateScale: Number(opt('--date-scale', '1')) || 1,
+    clockJump: Number(opt('--clock-jump', '0')) || 0,
+    fastCanvas: flag('--fast-canvas'),
+    jumpAtDate: Number(opt('--jump-at-date', '0')) || 0,
+    timerScale: Number(opt('--timer-scale', '1')) || 1,
   };
 
   const bridge = createBridge(cfg);
@@ -187,17 +195,45 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     await new Promise((r) => setTimeout(r, 100));
   }
 
-  // ★ 拿到 body 不代表结束：还要等服务端返回 token（sensor 会用它写 document.cookie）。
-  //   只等 body 就退出，会得到"payload 正常但 cookie=null"的假结果。
+  // ★★ 关键：不要在第一个 POST 后就收工。
+  //   实测 timer 统计：注册 64 次、只触发 28 次，其中 32 个 delay=100ms 的计时器从未执行。
+  //   sensor 的采集是**分阶段**的（每阶段 setTimeout(100)），我们提前退出 = 只跑了首轮，
+  //   这也解释了为什么采集计数精确是 iv8 的约一半（measureText 338 vs 732）。
+  //   所以要留足时间让所有 pending timer 跑完，并且取**最后一个** POST 的响应。
   if (posted) {
+    const settleMs = Number(opt('--settle', '20000')) || 20000;
+    log('[5.6] 等待分阶段采集跑完（最多 %sms，期间出现的新 POST 会计入）…', settleMs);
+    const sdl = Date.now() + settleMs;
+    let lastCount = bridge._state.postBodies.length;
+    while (Date.now() < sdl) {
+      await new Promise((r) => setTimeout(r, 200));
+      if (bridge._state.postBodies.length > lastCount) {
+        lastCount = bridge._state.postBodies.length;
+        posted = bridge._state.postBodies[lastCount - 1];
+        log('      新 POST #%s body=%s', lastCount, posted.body.length);
+      }
+    }
+    const tlAll = bridge._timerLog();
+    const setN = tlAll.filter((x) => x.kind === 'set').length;
+    const fireN = tlAll.filter((x) => x.kind === 'fire').length;
+    const clearN = tlAll.filter((x) => x.kind === 'clear').length;
+    log('      timer 最终：注册 %s / 触发 %s / 取消 %s（未触发且未取消 %s）',
+      setN, fireN, clearN, setN - fireN - clearN);
+    if (setN - fireN - clearN > 0) {
+      const fires = new Set(tlAll.filter(x => x.kind === 'fire').map(x => x.id));
+      const clears = new Set(tlAll.filter(x => x.kind === 'clear').map(x => x.id));
+      const pend = tlAll.filter(x => x.kind === 'set' && !fires.has(x.id) && !clears.has(x.id));
+      log('      未完成 timer 的 delay 分布: %j',
+        pend.reduce((m, x) => { m[x.delay] = (m[x.delay] || 0) + 1; return m; }, {}));
+    }
+
+    // 等最后一次 POST 的响应
     const before = (bridge._state.postResponses || []).length;
-    const rdl = Date.now() + 60000;
+    const rdl = Date.now() + 30000;
     while (Date.now() < rdl) {
-      if ((bridge._state.postResponses || []).length > before) break;
-      if (jar.toObject()['reese84']) break;
+      if ((bridge._state.postResponses || []).length >= bridge._state.postBodies.length) break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    // 给 sensor 一点时间把 token 写进 cookie
     const cdl = Date.now() + 5000;
     while (Date.now() < cdl && !jar.toObject()['reese84']) {
       await new Promise((r) => setTimeout(r, 100));
@@ -228,7 +264,9 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   }
 
   out.bodyLen = posted.body.length;
-  log('[5.5] 捕获 POST %s %s body=%s', posted.method, posted.url, posted.body.length);
+  out.postCount = bridge._state.postBodies.length;
+  log('[5.5] 采用最后一个 POST（共 %s 个）%s body=%s',
+    out.postCount, posted.url, posted.body.length);
   log('      headers=%j', posted.headers);
   log('      body 头部: %s', posted.body.slice(0, 260));
   try {
@@ -320,6 +358,16 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     log('    总跨度 %s μs / %s 次', tr[tr.length - 1] - tr[0], tr.length);
   }
   try { log('    Date 统计: %j', env.page.dateStats()); } catch (e) {}
+  const tl = bridge._timerLog();
+  if (tl.length) {
+    const sets = tl.filter(x => x.kind === 'set');
+    const fires = tl.filter(x => x.kind === 'fire');
+    const delays = {};
+    for (const x of sets) delays[x.delay] = (delays[x.delay] || 0) + 1;
+    log('    --- timer 统计：注册 %s 次 / 触发 %s 次 ---', sets.length, fires.length);
+    log('    delay 分布: %j', delays);
+    log('    前 20 条: %j', tl.slice(0, 20).map(x => x.kind + '(' + x.id + ',' + x.delay + ')@' + x.at));
+  }
   const pl = bridge._perfLog();
   if (pl.length) {
     log('    --- User Timing 轨迹 (%s 条) ---', pl.length);

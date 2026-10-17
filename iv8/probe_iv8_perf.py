@@ -98,6 +98,51 @@ PERF_HOOK = r"""
     Date.now = function () { window.__dateCalls++; return dnow.call(Date); };
   } catch (e) {}
 
+  // ── 采集能力计数：和 Node 补环境的 counters 直接对比，看少做了哪些采集 ──
+  window.__capCount = {};
+  function cnt(k) { window.__capCount[k] = (window.__capCount[k] || 0) + 1; }
+  try {
+    var P2 = window.HTMLCanvasElement && window.HTMLCanvasElement.prototype;
+    if (P2) {
+      var gctx = P2.getContext;
+      P2.getContext = function (t) { cnt('getContext.' + String(t).toLowerCase()); return gctx.apply(this, arguments); };
+      var tdu = P2.toDataURL;
+      if (tdu) P2.toDataURL = function () { cnt('canvas.toDataURL'); return tdu.apply(this, arguments); };
+      var tdb = P2.toBlob;
+      if (tdb) P2.toBlob = function () { cnt('canvas.toBlob'); return tdb.apply(this, arguments); };
+    }
+  } catch (e) { cnt('ERR.canvas'); }
+  try {
+    var C2 = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+    if (C2) {
+      ['measureText','getImageData','putImageData','fillText','strokeText'].forEach(function (m) {
+        var f = C2[m]; if (!f) return;
+        C2[m] = function () { cnt('ctx.' + m); return f.apply(this, arguments); };
+      });
+    }
+  } catch (e) { cnt('ERR.ctx'); }
+  try {
+    var G2 = window.WebGLRenderingContext && window.WebGLRenderingContext.prototype;
+    if (G2) {
+      ['getParameter','getExtension','readPixels'].forEach(function (m) {
+        var f = G2[m]; if (!f) return;
+        G2[m] = function () { cnt('gl.' + m); return f.apply(this, arguments); };
+      });
+    }
+  } catch (e) { cnt('ERR.gl'); }
+  try {
+    var ce = document.createElement.bind(document);
+    document.createElement = function (t) { cnt('create.' + String(t).toLowerCase()); return ce.apply(document, arguments); };
+  } catch (e) {}
+  try {
+    var AC2 = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (AC2) { var st2 = AC2.prototype.startRendering;
+      if (st2) AC2.prototype.startRendering = function () { cnt('audio.startRendering'); return st2.apply(this, arguments); }; }
+    var AC3 = window.AudioContext || window.webkitAudioContext;
+    if (AC3) { var oc = AC3.prototype.createOscillator;
+      if (oc) AC3.prototype.createOscillator = function () { cnt('audio.createOscillator'); return oc.apply(this, arguments); }; }
+  } catch (e) {}
+
   // 直接读 navigation / paint 条目，看有没有真实数据
   try {
     var navs = P.getEntriesByType ? P.getEntriesByType('navigation') : null;
@@ -115,6 +160,7 @@ CAPTURE = r"""
       ? (Math.round((window.__nowLast - window.__nowFirst) * 1000) / 1000) : null,
     dateCalls: window.__dateCalls || 0,
     payloadLen: (window.__body_full || '').length,
+    capCount: window.__capCount || {},
     docCookie: (function () { try { return (document.cookie || '').slice(0, 80); } catch (e) { return 'ERR'; } })(),
   };
   try {
@@ -208,6 +254,11 @@ def main():
     print("    interrogation = %s" % json.dumps(info.get("interrogation"), ensure_ascii=False))
     print("    now 调用 %s 次，跨度 %s ms；Date.now 调用 %s 次"
           % (info.get("nowCalls"), info.get("nowSpan"), info.get("dateCalls")))
+
+    cc = info.get("capCount") or {}
+    print("\n    --- 采集能力计数（与 Node 补环境对比）---")
+    for k in sorted(cc.keys()):
+        print("      %-28s %s" % (k, cc[k]))
 
     log = info.get("perfLog") or []
     print("\n    --- performance 轨迹（%d 条）---" % len(log))

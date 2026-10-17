@@ -277,3 +277,59 @@ const __pageApi = {
     return out;
   },
 };
+
+// ══════════════════════════════════════════════════════════════════
+// --fast-canvas：快速 canvas（对齐 iv8 的耗时形态）
+// 实测 iv8（能通过）的 phase1 只有 46μs，装不下 16 次真实 canvas 取图，
+// 说明它的 canvas 并不做真实光栅化 —— 服务端看的是"耗时形态"，不是像素质量。
+// 这个开关把 measureText / toDataURL / getImageData 换成确定性的快速实现，
+// 让 phase1 塌到真机量级。像素值的真实性由 baseline.json 回放保证，不靠现场渲染。
+// （必须放在 03-window 之后：HTMLCanvasElement 在 03 才定义）
+// ══════════════════════════════════════════════════════════════════
+if (__CFG.fastCanvas) {
+  const __BC = __CFG.baseline || {};
+  const __fixedDataURL = (function () {
+    const len = (__BC.canvas && __BC.canvas.dataURLLen) || 13000;
+    const head = 'data:image/png;base64,';
+    const bodyLen = Math.max(64, len - head.length);
+    const AB = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let s = '';
+    let seed = 0x2545f491;
+    for (let i = 0; i < bodyLen; i++) {
+      seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0;
+      s += AB[seed & 63];
+    }
+    return head + s;
+  })();
+
+  defMethod(HTMLCanvasElement.prototype, 'toDataURL', function () {
+    if (__diagJump) __diagJump();
+    return __fixedDataURL;
+  });
+
+  defMethod(CanvasRenderingContext2D.prototype, 'measureText', function (text) {
+    const t = String(text);
+    const m = /(\d+(?:\.\d+)?)px/.exec(this.font || '10px sans-serif');
+    const size = m ? parseFloat(m[1]) : 10;
+    const w = Math.round(t.length * size * 0.52 * 100) / 100;
+    return {
+      width: w, actualBoundingBoxLeft: 0, actualBoundingBoxRight: w,
+      actualBoundingBoxAscent: size * 0.75, actualBoundingBoxDescent: size * 0.2,
+      fontBoundingBoxAscent: size * 0.8, fontBoundingBoxDescent: size * 0.2,
+      emHeightAscent: size * 0.8, emHeightDescent: size * 0.2,
+      hangingBaseline: size * 0.65, alphabeticBaseline: 0, ideographicBaseline: -size * 0.2,
+    };
+  });
+
+  defMethod(CanvasRenderingContext2D.prototype, 'getImageData', function (x, y, w, h) {
+    if (__diagJump) __diagJump();
+    const n = Math.max(0, (w | 0) * (h | 0) * 4);
+    const data = new Uint8ClampedArray(n);
+    let seed = 0x9e3779b9 ^ n;
+    for (let i = 0; i < n; i++) {
+      seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0;
+      data[i] = seed & 255;
+    }
+    return { width: w | 0, height: h | 0, colorSpace: 'srgb', data };
+  });
+}

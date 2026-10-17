@@ -117,7 +117,10 @@ class Performance extends EventTarget {
     s.marks = new Map();
     s.observers = [];
   }
-  get timeOrigin() { try { __HOST__._note('perf.timeOrigin'); } catch (e) {} return st(this).timeOrigin; }
+  get timeOrigin() {
+    try { __HOST__._note('perf.timeOrigin'); } catch (e) {}
+    return st(this).timeOrigin + (__probeTime ? 16 : 0);
+  }
   get timing() {
     try { __HOST__._note('perf.timing'); } catch (e) {}
     const s = st(this);
@@ -125,7 +128,7 @@ class Performance extends EventTarget {
     const t0 = s.timeOrigin;
     const navStart = s.timeOrigin;
     const t = {
-      navigationStart: Math.round(t0) - (Number(__CFG.navOffsetMs) || 0),
+      navigationStart: Math.round(t0) - (Number(__CFG.navOffsetMs) || 0) + (__probeTime ? 32 : 0),
       unloadEventStart: 0, unloadEventEnd: 0,
       redirectStart: 0, redirectEnd: 0,
       fetchStart: Math.round(t0 + 2),
@@ -144,6 +147,12 @@ class Performance extends EventTarget {
       toJSON() { return this; },
     };
     // 单调递增修正 + 保证 browser 里常见的属性
+    if (__probeTime) {
+      // 用 100000 这种量级，远超采集耗时本身的噪声（实测 484~781），一次就能看清
+      for (const k of Object.keys(t)) {
+        if (typeof t[k] === 'number' && k !== 'navigationStart') t[k] += 100000;
+      }
+    }
     let prev = -Infinity;
     for (const k of Object.keys(t)) {
       if (typeof t[k] === 'number' && k.endsWith('Start') || k.endsWith('End') || /^(fetchStart|domainLookupStart|domainLookupEnd|connectStart|connectEnd|requestStart|responseStart|responseEnd|domLoading|domInteractive|domComplete|navigationStart|secureConnectionStart)$/.test(k)) {
@@ -183,7 +192,7 @@ class Performance extends EventTarget {
   get eventCounts() { return new Map(); }
   get onresourcetimingbufferfull() { return null; }
   set onresourcetimingbufferfull(v) {}
-  now() { return __HOST__.now(); }
+  now() { return __HOST__.now() + (__probeTime ? 1 : 0); }
   toJSON() { return { timeOrigin: this.timeOrigin, timing: this.timing, navigation: this.navigation }; }
   mark(name) {
     const s = st(this);
@@ -978,6 +987,19 @@ for (const m of ['addEventListener', 'removeEventListener', 'dispatchEvent']) {
   defValue(__window, m, nativeLike(EventTarget.prototype[m], m), false);
 }
 
+// ── 虚拟时钟（定时器时间解耦）──
+// ★★ 这是整条补环境路线最关键的一块。
+//   sensor 的采集是**用 setTimeout 分阶段**做的。实测对照：
+//     iv8（通过）：eventLoop.sleep(600) × 14  → 推进 8.4s 虚拟时间 → total 6570
+//     我们：      同步 eval 一次跑完          → total 只有 540μs
+//   真实浏览器也一样：每个阶段之间真有 16~600ms 的等待，累积 6~8 秒。
+//   所以"虚拟时钟"不是缩放 now() 的返回值（已实测无效），而是让
+//   **定时器的真实延迟与脚本读到的时间解耦**：
+//     真实只等 delay/timerScale 毫秒，但虚拟时钟推进完整的 delay。
+//   这就是 CSDN 那篇说的"把数秒交互压缩到亚秒跑完，而脚本读到的时间仍是真实经过了那么久"。
+var __clockJump = 0;
+var __timerScale = 1;
+
 // 定时器：真实 host 定时器，保证 sensor 的异步流程能推进
 const __timers = new Map();
 let __timerSeq = 1;
@@ -985,25 +1007,33 @@ function __setTimeout(fn, delay, ...args) {
   if (typeof fn === 'string') { const code = fn; fn = function () { (0, eval)(code); }; }
   if (typeof fn !== 'function') return 0;
   const id = __timerSeq++;
-  const d = Math.max(0, Number(delay) || 0);
+  const virt = Math.max(0, Number(delay) || 0);
+  const real = __timerScale > 1 ? virt / __timerScale : virt;
+  try { if (__HOST__._timerRec) __HOST__._timerRec('set', id, virt); } catch (e) {}
   const h = __HOST__.setTimeout(() => {
     __timers.delete(id);
+    try { if (__HOST__._timerRec) __HOST__._timerRec('fire', id, virt); } catch (e) {}
+    // 回调前补齐虚拟时间：脚本看到"过了 virt 毫秒"，实际只等了 real 毫秒
+    if (__timerScale > 1) __clockJump += (virt - real);
     try { fn.apply(__window, args); } catch (e) { __HOST__.log('timer 异常: %s', e && e.message); }
-  }, d);
+  }, real);
   __timers.set(id, { h, type: 'timeout' });
   return id;
 }
 function __clearTimeout(id) {
   const t = __timers.get(Number(id));
+  try { if (__HOST__._timerRec) __HOST__._timerRec('clear', Number(id), t ? 1 : 0); } catch (e) {}
   if (t) { __HOST__.clearTimeout(t.h); __timers.delete(Number(id)); }
 }
 function __setInterval(fn, delay, ...args) {
   if (typeof fn !== 'function') return 0;
   const id = __timerSeq++;
-  const d = Math.max(4, Number(delay) || 4);
+  const virt = Math.max(4, Number(delay) || 4);
+  const real = __timerScale > 1 ? virt / __timerScale : virt;
   const h = __HOST__.setInterval(() => {
+    if (__timerScale > 1) __clockJump += (virt - real);
     try { fn.apply(__window, args); } catch (e) { __HOST__.log('interval 异常: %s', e && e.message); }
-  }, d);
+  }, real);
   __timers.set(id, { h, type: 'interval' });
   return id;
 }
@@ -1014,8 +1044,61 @@ const __BW = (__CFG.baseline || {}).window || {};
 // Date.now 统计：判断 payload 的 performance.total 是不是来自 Date 差值
 const __dateStats = { calls: 0, first: null, last: null };
 const __origDateNow = Date.now;
+// ★ 日期时钟必须与 performance.now 同步缩放。
+//   iv8 的 total 来自"虚拟时间推进量"（eventLoop.sleep 推进 8.4s → total 6570），
+//   只缩放 performance.now 而不缩放 Date.now，两者会互相矛盾，
+//   传感器取哪个都可能拿到未缩放的值。
+var __diagJump = function () {};
+const __clockEpoch = Date.now();
+const __dateScale = Number(__CFG.dateScale || __CFG.clockScale) || 1;
+
+// ★★ 时钟跳变（--clock-jump <ms>）
+//   实测确认：payload 的 phase1 / phase2 / total 三个数字**全部来自 Date.now() 差值**，
+//   与 performance.now() 无关（只缩放 perf 时三个数字纹丝不动）。
+//   而 iv8（能通过）的形态是 phase1=46（真实耗时）/ total=6570（占 0.7%），
+//   即"前置极快、主体很长"；全局缩放会让 phase1 也一起变大（8268），比例就反了。
+//   正确做法：phase1 阶段返回真实时间；等进入真正采集（第一次 canvas 取图）时，
+//   一次性把时钟快进 N 毫秒 —— 于是 phase1 保持真实小值，total 变成 6500+。
+let __jumpFired = false;
+const __jumpMs = Number(__CFG.clockJump) || 0;
+__diagJump = function () {
+  if (__jumpFired || !__jumpMs) return;
+  __jumpFired = true;
+  __clockJump += __jumpMs;
+  try { __HOST__.log('时钟快进 +%sms（触发点）', __jumpMs); } catch (e) {}
+};
+// 触发点：真实采集开始的标志。canvas 取图最可靠（sensor 一定会在主采集里做）。
+if (__jumpMs) {
+  const __origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  defMethod(HTMLCanvasElement.prototype, 'toDataURL', function () {
+    __diagJump();
+    return __origToDataURL.apply(this, arguments);
+  });
+  const __origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+  defMethod(CanvasRenderingContext2D.prototype, 'getImageData', function () {
+    __diagJump();
+    return __origGetImageData.apply(this, arguments);
+  });
+}
+
+// --jump-at-date N：在第 N 次 Date.now() 调用之后跳变。
+// 依据：实测 total = phase1 + 28μs，说明 phase1 是 total 的主体；
+// 而 iv8 是 total - phase1 = 6524μs，那 6.5 秒在 phase1 的计时窗口**之外**。
+// 所以要卡在"phase1 算完、total 还没算完"的那个间隙跳变。
+// Date.now 全程只被调 ~21 次，按调用序号卡点足够精确。
+var __dateCallIdx = 0;
+const __jumpAtDate = Number(__CFG.jumpAtDate) || 0;
 Date.now = function () {
-  const v = __origDateNow.call(Date);
+  __dateCallIdx++;
+  if (__jumpAtDate && __dateCallIdx === __jumpAtDate + 1 && !__jumpFired && __jumpMs) {
+    __jumpFired = true;
+    __clockJump += __jumpMs;
+    try { __HOST__.log('时钟快进 +%sms（第 %s 次 Date.now 之后）', __jumpMs, __jumpAtDate); } catch (e) {}
+  }
+  const real = __origDateNow.call(Date);
+  const v = (__dateScale === 1)
+    ? real + __clockJump + (__probeTime ? 2 : 0)
+    : Math.round(__clockEpoch + (real - __clockEpoch) * __dateScale + __clockJump);
   __dateStats.calls++;
   if (__dateStats.first === null) __dateStats.first = v;
   __dateStats.last = v;
@@ -1039,14 +1122,14 @@ const __dateObjStats = { calls: 0, first: null, last: null };
   const og = RealDate.prototype.getTime;
   const ov = RealDate.prototype.valueOf;
   defMethod(RealDate.prototype, 'getTime', function () {
-    const v = og.call(this);
+    const v = og.call(this) + (__probeTime ? 4 : 0);
     __dateObjStats.calls++;
     if (__dateObjStats.first === null) __dateObjStats.first = v;
     __dateObjStats.last = v;
     return v;
   });
   defMethod(RealDate.prototype, 'valueOf', function () {
-    const v = ov.call(this);
+    const v = ov.call(this) + (__probeTime ? 4 : 0);
     __dateObjStats.calls++;
     if (__dateObjStats.first === null) __dateObjStats.first = v;
     __dateObjStats.last = v;
@@ -1054,6 +1137,21 @@ const __dateObjStats = { calls: 0, first: null, last: null };
   });
   try { Object.defineProperty(globalThis, 'Date', { value: WrappedDate, configurable: true, writable: true }); } catch (e) {}
 })();
+
+// ══════════════════════════════════════════════════════════════════
+// 可识别偏移探针（--probe-time）
+// 目的：一次运行内定位 payload.performance.total 到底用哪个时间源。
+// 做法：给 window 上所有能返回时间的东西各加一个互不相同的偏移，
+//       看 total 增加了哪个数 → 直接命中。
+//    perfNow     +1      performance.now()
+//    dateNow     +2      Date.now()
+//    dateGetTime +4      new Date().getTime()
+//    timeOrigin  +16     performance.timeOrigin
+//    navStart    +32     performance.timing.navigationStart
+//    evTimeStamp +64     new Event().timeStamp
+//    perfTiming  +256    timing 其余字段
+// ══════════════════════════════════════════════════════════════════
+const __probeTime = !!__CFG.probeTime;
 
 const __WIN = {
   innerWidth: __BW.innerWidth || 1340, innerHeight: __BW.innerHeight || 757,
@@ -1093,6 +1191,7 @@ function __evalMedia(q) {
 
 function __installWindow() {
   const w = __window;
+  __timerScale = Number(__CFG.timerScale) || 1;
 
   // 基本自引用
   defValue(w, 'window', w, false);
@@ -1150,6 +1249,7 @@ function __installWindow() {
 
   // 样式与查询
   defValue(w, 'getComputedStyle', nativeLike(function (el, pseudo) {
+    if (__CFG.slowDom) __HOST__.busy(typeof __CFG.slowDom === 'object' ? (__CFG.slowDom.gcs || 0) : __CFG.slowDom);
     return __computedStyle(el);
   }, 'getComputedStyle'), true);
   defValue(w, 'matchMedia', nativeLike(function (q) { return new MediaQueryList(q); }, 'matchMedia'), true);
