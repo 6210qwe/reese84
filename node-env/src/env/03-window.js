@@ -1486,7 +1486,18 @@ function __installWindow() {
   defValue(w, 'matchMedia', nativeLike(function (q) { return new MediaQueryList(q); }, 'matchMedia'), true);
 
   // 编解码
-  defValue(w, 'btoa', nativeLike(function (s) { return Buffer.from(String(s), 'latin1').toString('base64'); }, 'btoa'), true);
+  // ★ btoa 是 payload 的出口。
+  //   payload 的 p 字段是 base64 的，不管 sensor 怎么编码，
+  //   最终要么调 btoa、要么自己实现 base64。先 hook 这里。
+  //   如果 hook 到输入，那就是加密前的明文 —— 可以直接和 iv8 的对齐 diff。
+  defValue(w, 'btoa', nativeLike(function (s) {
+    const str = String(s);
+    try {
+      __HOST__._bump('btoa');
+      if (__CFG.dumpBtoa) __HOST__._btoaIn(str);
+    } catch (e) {}
+    return Buffer.from(str, 'latin1').toString('base64');
+  }, 'btoa'), true);
   defValue(w, 'atob', nativeLike(function (s) { return Buffer.from(String(s), 'base64').toString('latin1'); }, 'atob'), true);
 
   // crypto

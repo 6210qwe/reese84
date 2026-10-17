@@ -64,6 +64,21 @@ const CTX_METHODS = [
   'setLineDash', 'getLineDash', 'drawFocusIfNeeded', 'reset',
 ];
 
+// ★ putImageData 必须收到真正的 ImageData 实例。
+//   原来 getImageData 返回的是普通对象 {width,height,data}，
+//   于是 putImageData 抛 "Failed to recover `ImageData` type from napi value"，
+//   被 bSafe 的 catch 吞掉 —— 又是一次静默失败（sensor 画完的图没真正落到 canvas 上）。
+//   这里改用 @napi-rs/canvas 导出的 ImageData 构造器。
+// 从宿主取（vm 里没有 require）
+const __ImageDataCtor = (__HOST__ && __HOST__.ImageData) || null;
+
+function __makeImageData(data, w, h) {
+  if (__ImageDataCtor) {
+    try { return new __ImageDataCtor(data, w, h); } catch (e) {}
+  }
+  return { width: w, height: h, colorSpace: 'srgb', data };
+}
+
 function __installCtx2D(proto) {
   const b = (self) => {
     const canvas = st(self).canvas;
@@ -198,8 +213,15 @@ const GL_PARAMS = {
   35724: 'WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)',
   37445: 'Google Inc. (AMD)',
   37446: 'ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
-  3379: 16384, 34921: 16, 34930: 16, 35660: 16, 35661: 32,
-  36347: 4096, 36348: 30, 36349: 1024, 34076: 16384, 34024: 16384,
+  3379: 16384, 34921: 16, 34922: 16, 34930: 16, 35660: 16, 35661: 32,
+  // ★ 36347 (MAX_VERTEX_UNIFORM_VECTORS) 实测 iv8 是 4095，不是 4096。
+  //   4096 是"理论上限"，实际驱动给的是 4095 —— 差 1 也是可判的差异。
+  36347: 4095, 36348: 30, 36349: 1024, 34076: 16384, 34024: 16384,
+  // ★ MAX_VIEWPORT_DIMS (3386) 必须返回 Int32Array，不是标量。
+  //   原来这张表里根本没有 3386，于是 getParameter 走到兜底的 return 8，
+  //   而任何真实现返回的都是 [32767, 32767]。
+  //   一个"应该返回数组却返回数字 8"的字段，序列化后长度都不一样。
+  3386: new Int32Array([32767, 32767]),
   2978: new Int32Array([0, 0, 1340, 757]),
   3088: new Int32Array([0, 0, 1340, 757]),
   34016: 33984, 34047: 16,
@@ -255,6 +277,16 @@ function __installGL(proto, isGL2) {
     //   与 navigator/screen 一起看就是"自造指纹"。baseline 来自真实 Edge。
     const BW = (__CFG.baseline || {}).webgl || null;
     if (BW) {
+      // iv8-profile：优先用 dump 下来的 params（那是验证过能过的一套）
+      const bp0 = BW.params && BW.params[String(p)];
+      if (bp0 !== undefined && bp0 !== null) {
+        // 3386 / 2978 / 3088 这几个在 iv8 里是对象 {0:..,1:..}，要还原成 Int32Array
+        if (typeof bp0 === 'object') {
+          const arr = Object.keys(bp0).map((k) => bp0[k]);
+          return new Int32Array(arr);
+        }
+        return bp0;
+      }
       if (p === 7936) return BW.vendor;
       if (p === 7937) return BW.renderer;
       if (p === 7938) return BW.version;

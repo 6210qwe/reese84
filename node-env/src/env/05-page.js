@@ -14,6 +14,15 @@
 
 'use strict';
 
+// ★ 必须声明在最前面。
+//   踩过坑：原来写在第 358 行，但第 206 行就用了 typeof 判断 ——
+//   let 有 TDZ（暂时性死区），typeof 对 TDZ 变量同样抛 ReferenceError，
+//   被 try/catch 吞掉，表现成"回调永远不触发、日志里什么都没有"。
+//   这类 hoisting 坑和之前那三次（__installCtx2D 忘调用、baseline 没挂 cfg、
+//   导出塞进 if 块）是同一类：不报错，静默失效。
+var __onScriptsDone = null;
+
+
 const __pendingScripts = [];
 
 function __stripScripts(html) {
@@ -198,6 +207,16 @@ function __pageLoad(html, baseUrl) {
     try { __runExternalScript(el); } catch (e) {}
   }
 
+  // ★ 注入点：inline script 执行完（sensor 的监听器已注册），
+  //   但还没派发 DOMContentLoaded。
+  //   如果 sensor 的采集发生在同步阶段内部，只有在这里派发才赶得上。
+  //   实测 load() 返回后派发无效（payload 长度纹丝不动），
+  //   说明它的采集/序列化在 load() 内部就完成了。
+  __HOST__.log('[dbg] load 内部: typeof __onScriptsDone = %s', typeof __onScriptsDone);
+  if (typeof __onScriptsDone === 'function') {
+    try { __onScriptsDone(); } catch (e) { __HOST__.log('onScriptsDone 异常: %s', e && e.message); }
+  }
+
   // DOMContentLoaded / load
   st(__document).readyState = 'interactive';
   try { __document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true })); } catch (e) {}
@@ -320,27 +339,29 @@ function __dispatchMouseTrail(opts) {
   fire('mouseover', pts[0][0], pts[0][1]);
   fire('mouseenter', pts[0][0], pts[0][1], { bubbles: false });
 
-  // 逐点移动。用 setTimeout 分开，让 sensor 能以"真实时间"记录时间戳
-  let i = 0;
+  // ★★ 时序是关键，这里踩过坑：
+  //   第一版在开头写了 __HOST__.setTimeout(..., 120)，以为"等 sensor 注册完监听器再动"。
+  //   实测 timer 统计：sensor 注册了 26 个 delay=0 的定时器，它的采集在
+  //   load() 返回后的下一 tick 就跑完了 —— 120ms 之后再派发，它早就上报了。
+  //   所以：**第一波必须同步立即派发**，后续点也用 0 延迟排队。
+  fire('mousemove', pts[0][0], pts[0][1]);
+
+  let i = 1;
   const step = () => {
     if (i >= pts.length) {
-      // 收尾：按下再抬起（一次点击），然后 mouseout
       fire('mousedown', x1, y1, { buttons: 1 });
       __HOST__.setTimeout(() => {
         fire('mouseup', x1, y1, { buttons: 0 });
-        __HOST__.setTimeout(() => fire('mouseout', x1, y1), 60);
-      }, 110);
+        __HOST__.setTimeout(() => fire('mouseout', x1, y1), 0);
+      }, 0);
       return;
     }
     const [x, y] = pts[i++];
     fire('mousemove', x, y, { buttons: 0 });
-    __HOST__.setTimeout(step, o.fast ? 2 : Math.round(rand(8, 40)));
+    // fast 模式：全部用 0 延迟，让所有点在同一批微任务里排完
+    __HOST__.setTimeout(step, o.fast ? 0 : Math.round(rand(8, 40)));
   };
-
-  __HOST__.setTimeout(() => {
-    fire('mousemove', pts[0][0], pts[0][1]);
-    step();
-  }, 120);
+  step();
 }
 
 const __pageApi = {
@@ -365,6 +386,9 @@ const __pageApi = {
   addClockJump(ms) { __clockJump += Number(ms) || 0; },
   // 派发鼠标轨迹（sensor 会监听 mousemove 填 events.mouse）
   mouseTrail(opts) { __dispatchMouseTrail(opts); },
+  // 注册"脚本执行完"回调：在 load() 内部、DOMContentLoaded 之前触发。
+  // 这是唯一能赶在 sensor 同步采集之前派发事件的时机。
+  onScriptsDone(fn) { __onScriptsDone = fn; },
   clockJump() { return __clockJump; },
   getDocument: () => __document,
   getWindow: () => __window,
@@ -410,7 +434,7 @@ if (__CFG.iv8Profile) {
   });
   defMethod(CanvasRenderingContext2D.prototype, 'getImageData', function (x, y, w, h) {
     const n = Math.max(0, (w | 0) * (h | 0) * 4);
-    return { width: w | 0, height: h | 0, colorSpace: 'srgb', data: new Uint8ClampedArray(n) };
+    return __makeImageData(new Uint8ClampedArray(n), w | 0, h | 0);
   });
 }
 

@@ -21,6 +21,12 @@ try {
   BASELINE = JSON.parse(fs.readFileSync(path.join(__dirname, 'env', 'baseline.json'), 'utf8'));
 } catch (e) { BASELINE = null; }
 
+// ★ vm 上下文里没有 require，所以 napi-rs/canvas 的 ImageData 必须从宿主注入。
+//   踩过坑：在 02-media.js 里直接 require('@napi-rs/canvas') 会抛 ReferenceError，
+//   被 catch 成 null，于是 putImageData 永远收到普通对象、永远报类型错误。
+let __NapiImageData = null;
+try { __NapiImageData = require('@napi-rs/canvas').ImageData || null; } catch (e) {}
+
 const UA = (BASELINE && BASELINE.navigator && BASELINE.navigator.userAgent)
   || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 const CURL = process.env.CURL_BIN || 'curl.exe';
@@ -239,6 +245,17 @@ function createBridge(cfg) {
     if (timerLog.length < 2000) timerLog.push({ kind, id, delay, at: Date.now() - timeOrigin });
   };
   const fontUse = new Map();
+  // ★ btoa 输入全量记录：payload 是分块 base64 拼起来的（实测 1906 次），
+  //   把所有输入拼起来就是编码前的明文 —— 这是唯一能"看见字段值"的途径。
+  const btoaIns = [];
+  let btoaAll = '';
+  let btoaTotal = 0;
+  const btoaIn = (s) => {
+    btoaTotal += s.length;
+    if (btoaIns.length < 40) btoaIns.push({ len: s.length, head: s.slice(0, 200) });
+    // 只收"像 payload 片段"的（长度 > 2 或包含结构字符），避免把逐字节编码也塞进去
+    if (btoaAll.length < 200000) btoaAll += s;
+  };
   const perfLog = [];
   const perf = (kind, name, dur) => {
     if (perfLog.length < 4000) perfLog.push({ kind, name, dur: Math.round(dur * 1000) / 1000 });
@@ -444,6 +461,10 @@ function createBridge(cfg) {
     _bump: bump,
     _note: note,
     _notes: () => Array.from(notes),
+    ImageData: __NapiImageData,
+    _btoaIn: btoaIn,
+    _btoaIns: () => btoaIns,
+    _btoaAll: () => ({ text: btoaAll, total: btoaTotal, calls: btoaIns.length }),
     _fontUse: (f) => { const k = String(f || ''); fontUse.set(k, (fontUse.get(k) || 0) + 1); },
     _fontUseMap: () => Array.from(fontUse.entries()).sort((a, b2) => b2[1] - a[1]),
     _perf: perf,

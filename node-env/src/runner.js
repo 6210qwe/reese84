@@ -105,6 +105,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     timerScale: Number(opt('--timer-scale', '1')) || 1,
     fakeStart: Number(opt('--fake-start', '0')) || 0,
     iv8Profile: flag('--iv8-profile'),
+    dumpBtoa: flag('--dump-btoa'),
     traceDate: flag('--trace-date'),
     warpMs: Number(opt('--warp-ms', '0')) || 0,
     warpRatio: Number(opt('--warp-ratio', '0.09')) || 0.09,
@@ -112,6 +113,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
 
   const preJumpMs = Number(opt('--pre-jump', '0')) || 0;
   const fixRandom = opt('--fix-random', '');
+  const out = {};
   const bridge = createBridge(cfg);
   const jar = bridge._jar;
 
@@ -286,7 +288,26 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   }
 
   // ③ 载入挑战页，执行脚本（sensor 在这里被 append 并同步 eval）
+  // ★ 关键：如果要在 sensor 采集之前派发鼠标，必须在 load() 内部做。
+  //   load() 返回后派发实测无效（payload 长度不变）—— 它的采集在同步阶段就完成了。
+  if (flag('--mouse-inload')) {
+    env.page.onScriptsDone(function () {
+      try {
+        env.page.mouseTrail({ fast: true });
+        log('[4.85] 已在 load() 内部派发鼠标轨迹');
+      } catch (e) { log('!! load 内派发失败: %s', e && e.message); }
+    });
+  }
+
   const prePostCount = bridge._state.postBodies.length;
+  const tLoadStart = Date.now();
+  const postInLoad = { at: null };
+  // 打点：如果 load() 返回前就有 POST，说明采集是同步的、派发鼠标来不及
+  const watch = setInterval(() => {
+    if (bridge._state.postBodies.length > prePostCount && !postInLoad.at) {
+      postInLoad.at = Date.now();
+    }
+  }, 1);
   try {
     env.load(ch.text, ENTRY);
   } catch (e) {
@@ -300,7 +321,16 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
       log('[4.9] 已派发鼠标轨迹');
     } catch (e) { log('!! 鼠标轨迹派发失败: %s', e && e.message); }
   }
-  log('[5] 页面执行结束 (%sms) 请求数=%s', Date.now() - t0, bridge._state.requests.length);
+  const tLoadEnd = Date.now();
+  clearInterval(watch);
+  log('[5] 页面执行结束 (%sms) 请求数=%s  load耗时=%sms  load内已POST=%s',
+    Date.now() - t0, bridge._state.requests.length, tLoadEnd - tLoadStart,
+    postInLoad.at ? ('是 @+' + (postInLoad.at - tLoadStart) + 'ms') : '否');
+  out.loadTiming = {
+    loadMs: tLoadEnd - tLoadStart,
+    postDuringLoad: !!postInLoad.at,
+    postAtMs: postInLoad.at ? postInLoad.at - tLoadStart : null,
+  };
 
   // ④ 等 sensor 的 POST 落地
   const deadline = Date.now() + 120000;
@@ -358,7 +388,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     }
   }
 
-  const out = {
+  Object.assign(out, {
     ok: false,
     elapsedMs: Date.now() - t0,
     cookie: null,
@@ -369,7 +399,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     performance: null,
     requests: bridge._state.requests.map((r) => ({ method: r.method, url: r.url.slice(0, 120), status: r.status, len: r.len })),
     errors: bridge._state.errors,
-  };
+  });
 
   if (!posted) {
     log('!! sensor 没有发出 POST（%sms）', Date.now() - t0);
@@ -522,6 +552,14 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     log('    --- timer 统计：注册 %s 次 / 触发 %s 次 ---', sets.length, fires.length);
     log('    delay 分布: %j', delays);
     log('    前 20 条: %j', tl.slice(0, 20).map(x => x.kind + '(' + x.id + ',' + x.delay + ')@' + x.at));
+  }
+  if (flag('--dump-btoa')) {
+    const bs = bridge._btoaIns();
+    const all = bridge._btoaAll();
+    log('    btoa 调用 %s 次，输入总长 %s 字节', all.calls || bs.length, all.total);
+    fs.writeFileSync(path.join(__dirname, '..', '_btoa_plain.txt'), all.text, 'utf8');
+    log('    明文已落盘 -> _btoa_plain.txt (%s 字节)', all.text.length);
+    for (const x of bs.slice(0, 5)) log('      len=%s head=%j', x.len, x.head.slice(0, 100));
   }
   const fu = bridge._fontUseMap();
   if (fu.length) {
