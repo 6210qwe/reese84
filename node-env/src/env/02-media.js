@@ -101,6 +101,9 @@ function __installCtx2D(proto) {
   }
   defMethod(proto, 'measureText', function (text) {
     try { __HOST__._bump('canvas.measureText'); } catch (e) {}
+    // 记录被测量的 font 声明：字体探测的调用数差一倍时，靠这张表能一眼看出
+    // 是"候选集少了"还是"循环轮数少了"
+    try { __HOST__._fontUse(this.font); } catch (e) {}
     // 真实浏览器里 measureText 要走 HarfBuzz+DirectWrite 整形，单次约 5~20μs；
     // Skia 的 measureText 只要 0.5~2μs。reese84 会把整段采集耗时上传，
     // 快 10 倍本身就是"非浏览器"的证据，这里用 spin 补齐到浏览器量级。

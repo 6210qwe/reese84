@@ -218,6 +218,7 @@ function createBridge(cfg) {
   const timerRec = (kind, id, delay) => {
     if (timerLog.length < 2000) timerLog.push({ kind, id, delay, at: Date.now() - timeOrigin });
   };
+  const fontUse = new Map();
   const perfLog = [];
   const perf = (kind, name, dur) => {
     if (perfLog.length < 4000) perfLog.push({ kind, name, dur: Math.round(dur * 1000) / 1000 });
@@ -423,6 +424,8 @@ function createBridge(cfg) {
     _bump: bump,
     _note: note,
     _notes: () => Array.from(notes),
+    _fontUse: (f) => { const k = String(f || ''); fontUse.set(k, (fontUse.get(k) || 0) + 1); },
+    _fontUseMap: () => Array.from(fontUse.entries()).sort((a, b2) => b2[1] - a[1]),
     _perf: perf,
     _timerRec: timerRec,
     _timerLog: () => timerLog,

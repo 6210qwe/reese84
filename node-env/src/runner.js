@@ -110,6 +110,7 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   };
 
   const preJumpMs = Number(opt('--pre-jump', '0')) || 0;
+  const fixRandom = opt('--fix-random', '');
   const bridge = createBridge(cfg);
   const jar = bridge._jar;
 
@@ -178,6 +179,42 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
   });
   // 让 delete globalThis.__bridge__ 生效
   Object.defineProperty(ctx, '__bridge__', { enumerable: true, configurable: true, writable: true, value: ctx.__bridge__ });
+
+  // ── --fix-random [seed]：固定 Math.random 序列 ──
+  //
+  // 目的：让两次运行生成**相同的 cr 与相同的编码**，从而能把两份 payload
+  // 逐字节对齐比较。payload 的编码密钥来自 sensor 内部的随机数，
+  // 不固定随机数的话每次编码都不一样，diff 出来全是噪声。
+  //
+  // 这是唯一能在不逆向 JSVMP 的前提下"看见字段级差异"的办法：
+  //   同一个 sensor + 同一份 Math.random 序列 → 同一套 cr 与编码
+  //   → 如果环境值完全一致，两份 payload 应该逐字节相同
+  //   → 不同的字节就是"环境差异"的精确坐标
+  if (fixRandom) {
+    const seedSrc = `(function(){
+      var s = ${fixRandom} >>> 0;
+      function rnd() {
+        // mulberry32：确定性、分布均匀
+        s |= 0; s = (s + 0x6D2B79F5) | 0;
+        var t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      }
+      Math.random = rnd;
+      // crypto.getRandomValues 也要固定，否则用它的分支仍然随机
+      try {
+        var og = (crypto && crypto.getRandomValues) || null;
+        if (og) {
+          crypto.getRandomValues = function (arr) {
+            for (var i = 0; i < arr.length; i++) arr[i] = (rnd() * 256) | 0;
+            return arr;
+          };
+        }
+      } catch (e) {}
+    })();`;
+    vm.runInContext(seedSrc, ctx, { filename: 'fix-random.js' });
+    log('[3.5] Math.random 已固定，seed=%s', fixRandom);
+  }
 
   const src = buildEnvSource();
   let env;
@@ -451,6 +488,15 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     log('    --- timer 统计：注册 %s 次 / 触发 %s 次 ---', sets.length, fires.length);
     log('    delay 分布: %j', delays);
     log('    前 20 条: %j', tl.slice(0, 20).map(x => x.kind + '(' + x.id + ',' + x.delay + ')@' + x.at));
+  }
+  const fu = bridge._fontUseMap();
+  if (fu.length) {
+    const total = fu.reduce((n, x) => n + x[1], 0);
+    const fams = new Set(fu.map((x) => {
+      const m = /px\s+(.+)$/.exec(x[0]); return m ? m[1] : x[0];
+    }));
+    log('    字体探测：%s 种 font 声明，%s 个不同族，共 %s 次 measureText', fu.length, fams.size, total);
+    log('      Top12: %j', fu.slice(0, 12).map((x) => x[1] + '×' + x[0]));
   }
   const pl = bridge._perfLog();
   if (pl.length) {
