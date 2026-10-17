@@ -221,6 +221,14 @@ function createBridge(cfg) {
     }
   }
 
+  // iv8 的 Navigator/Screen 原型属性名与顺序（iv8/dump_proto.py 导出）
+  if (cfg.iv8Profile) {
+    try {
+      const pn = JSON.parse(fs.readFileSync(path.join(__dirname, 'env', 'iv8_proto_names.json'), 'utf8'));
+      cfg.baseline.__protoNames = { navigator: pn.navigator, screen: pn.screen, navVals: pn.navVals };
+    } catch (e) {}
+  }
+
   // 真实浏览器 window 自有属性表（tools/dump_window_names.js 导出）
   let WINDOW_NAMES = [];
   try {

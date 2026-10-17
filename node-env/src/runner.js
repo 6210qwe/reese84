@@ -328,8 +328,20 @@ function blockMarks(t) { return BLOCK_MARKS.filter((m) => String(t || '').includ
     for (let i = 0; i < driveRounds; i++) {
       const n = env.page.advance(600);
       const st2 = env.page.vtState();
-      log('[4.7] drive 第 %s 轮：执行 %s 个回调，虚拟时间 %sms，剩余 %s',
-        i + 1, n, st2.now, st2.pending);
+      // ★★ 推进后必须让出真实事件循环。
+      //
+      //   踩过的坑：第一版 14 轮是同步 for 循环，全部在**同一个 tick** 里跑完。
+      //   而 sensor 的网络请求走 curl 子进程，响应要等 Node 的事件循环才能回来。
+      //   结果：14 轮推进完了，网络回调一个都没落地 → 采集链断在半路 → 完全不发 POST。
+      //   这也解释了为什么虚拟定时器模式下 payload 一直是 0、等到 121 秒也没 POST。
+      //
+      //   修法：每轮 advance 之后 await 一小段真实时间，把这个窗口让给
+      //   curl 回调和 Promise 微任务。虚拟时钟照旧按 600ms 推进，
+      //   两者互不干扰 —— 这才是"虚拟时间 + 真实 I/O"的正确组合。
+      await new Promise((r) => setTimeout(r, Number(opt('--drive-yield', '120')) || 120));
+      const st3 = env.page.vtState();
+      log('[4.7] drive 第 %s 轮：执行 %s 个回调，虚拟时间 %sms，剩余 %s（让出后剩余 %s）',
+        i + 1, n, st2.now, st2.pending, st3 ? st3.pending : '?');
       if (flag('--mouse-between')) {
         try { env.page.mouseTrail({ fast: true }); } catch (e) {}
       }

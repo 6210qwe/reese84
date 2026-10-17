@@ -1947,6 +1947,30 @@ function __installWindow() {
   // ══════════════════════════════════════════════════════════════
   __synthesizeWindowNames(w);
 
+  // ══════════════════════════════════════════════════════════════
+  // --iv8-profile：把 Navigator.prototype / Screen.prototype 的属性
+  // 名称集合与**顺序**对齐到 iv8。
+  //
+  // 为什么顺序也要对：
+  //   实测 iv8 有 69 个（vendorSub, productSub, vendor, maxTouchPoints, ...），
+  //   我们只有 45 个且顺序完全不同（constructor, plugins, mimeTypes, ...）。
+  //   如果 sensor 用 getOwnPropertyNames(navigator.__proto__) 采集，
+  //   名称集合和顺序都会直接体现在载荷里。
+  //   这不是"补几个值"能解决的，必须重建原型。
+  //
+  // 做法：把现有的描述符全部摘下来 → 删掉 → 按 iv8 的顺序重新定义；
+  // 缺的用同类型空桩补，保持可枚举/可配置一致。
+  // ══════════════════════════════════════════════════════════════
+  if (__CFG.iv8Profile) {
+    try {
+      const P = (__CFG.baseline || {}).__protoNames || null;
+      if (P) {
+        __realignPrototype(Navigator, P.navigator, P.navVals, 'Navigator');
+        __realignPrototype(Screen, P.screen, null, 'Screen');
+      }
+    } catch (e) { __HOST__.log('原型重排失败: %s', e && e.message); }
+  }
+
   // 显式的宿主可见性诊断钩子（默认不可枚举，避免被 Object.keys 看到）
   Object.defineProperty(w, '__diag', { value: __diagApi, configurable: true, enumerable: false });
 }
@@ -1955,6 +1979,53 @@ function __installWindow() {
  * 按导出的属性表合成缺失的 window 成员。
  * 已存在的名字一律不动 —— 手写的实现永远比合成的准。
  */
+/**
+ * 按给定名字顺序重建原型上的属性。
+ *
+ * 语义：
+ *   · 现有描述符优先（值不变，只改顺序/补缺）
+ *   · 缺的属性造同类型空桩（函数就给空函数，其余给 null / ''）
+ *   · 全部保持 get/set + enumerable + configurable，和原生一致
+ */
+function __realignPrototype(Ctor, order, vals, label) {
+  if (!Ctor || !Ctor.prototype || !order || !order.length) return;
+  const proto = Ctor.prototype;
+
+  // 1. 摘走已有描述符
+  const saved = new Map();
+  for (const name of Object.getOwnPropertyNames(proto)) {
+    try { saved.set(name, Object.getOwnPropertyDescriptor(proto, name)); } catch (e) {}
+  }
+  // 2. 删掉（否则重定义不会改变顺序）
+  for (const name of saved.keys()) {
+    if (name === 'constructor') continue;
+    try { delete proto[name]; } catch (e) {}
+  }
+  // 3. 按目标顺序重新定义
+  let added = 0;
+  for (const name of order) {
+    if (name === 'constructor') continue;
+    try {
+      if (saved.has(name)) {
+        Object.defineProperty(proto, name, saved.get(name));
+        continue;
+      }
+      // 缺的：造桩。类型尽量贴近（函数给空函数，对象给 null，其余给空串）
+      const v = vals && vals[name] ? String(vals[name]) : '';
+      const isFn = /^function:/.test(v);
+      const isObj = /^object:/.test(v);
+      const stubVal = isFn ? nativeLike(function () {}, name) : (isObj ? null : '');
+      Object.defineProperty(proto, name, {
+        get: nativeLike(function () { return stubVal; }, 'get ' + name),
+        configurable: true, enumerable: true,
+      });
+      added++;
+    } catch (e) {}
+  }
+  __HOST__.log('%s.prototype 重排：目标 %s 项，补 %s 项，现 %s 项',
+    label, order.length, added, Object.getOwnPropertyNames(proto).length);
+}
+
 function __synthesizeWindowNames(w) {
   const table = __CFG.windowNames || [];
   if (!table.length) return;
